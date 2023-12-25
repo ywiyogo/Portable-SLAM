@@ -2,10 +2,19 @@
 # Author: Yongkie Wiyogo
 # Description: Docker builder for Gazebo simulator
 
-container_name="ros2_portable_slam"
-docker_file="ros2_portable_slam.dockerfile"
+# Assign the first argument to a variable for architecture
+# Default to 'amd64' if no architecture argument is provided. Pass "osrf/ros:humble-desktop-full" if you want to build it on x86_64
+ARCH=${1:-arm64v8/ros:humble-perception}
+shift # Shift the positional parameters to the left, so $2 becomes $1, $3 becomes $2, etc.
+# for x86_64 humble-desktop-full or rolling-desktop-full
+CONTAINER_NAME=${1:-portable_slam_humble}
+shift
 
-# Add $1 to add any additional argument such as --no-cache
+DOCKERFILE="${CONTAINER_NAME}.dockerfile"
+
+# Add $@ to add any additional argument such as --no-cache
 docker build \
-  -t $container_name . \
-  -f $docker_file $1
+  --build-arg ROS_ARCH=$ARCH \
+  -t $CONTAINER_NAME . \
+  -f $DOCKERFILE \
+  "$@"

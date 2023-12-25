@@ -2,7 +2,10 @@
 # Descrp: Deployment environment for the ROS2 Humble on Raspi4 using YDLidar Tmini
 # Note: Add rm -rf /var/lib/apt/lists/* each after apt-get update and install to minimize the image size
 
-FROM arm64v8/ros:humble-perception
+# Pass  --build arg ARCH=osrf/ros:humble-desktop-full if you want to build it on x86_64
+ARG ROS_ARCH=arm64v8/ros:humble-perception
+# change the iamge tag for osrt/ros
+FROM ${ROS_ARCH}
 
 # Create a non-root user, uid 1000 is normally reserved for the default user
 ARG USERNAME=ros
