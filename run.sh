@@ -1,10 +1,10 @@
 #!/bin/bash
 # Author: Yongkie Wiyogo
-# Description: Docker runner for ROS2 Rolling and Gazebo simulator
+# Description: Docker runner for ROS2 and Gazebo simulator
 
 workspace_folder=""
 if [ -z "$1" ]; then
-  container_name="ros2_portable_slam"
+  container_name="portable_slam_humble"
 else
   container_name=$1
 fi
@@ -29,7 +29,7 @@ docker run \
   --tmpfs /tmp \
   -e USER=$USER \
   -e HOME=$HOME \
-  -e ROS_DISTRO=rolling -e DISPLAY=$DISPLAY \
+  -e ROS_DISTRO=humble -e DISPLAY=$DISPLAY \
   -e XAUTHORITY=$xauth \
   -e "TERM=xterm-256color" \
   -e QT_X11_NO_MITSHM=1 \
