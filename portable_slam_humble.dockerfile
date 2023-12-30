@@ -4,6 +4,7 @@
 
 # Pass  --build arg ARCH=osrf/ros:humble-desktop-full if you want to build it on x86_64
 ARG ROS_ARCH=arm64v8/ros:humble-perception
+
 # change the iamge tag for osrt/ros
 FROM ${ROS_ARCH}
 
@@ -11,6 +12,8 @@ FROM ${ROS_ARCH}
 ARG USERNAME=ros
 ARG USER_UID=1000
 ARG USER_GID=${USER_UID}
+
+ARG YDLIDAR_MODEL=TminiPro
 
 # Create the ros user and group with the default home folder (-m), and create a config folder
 RUN groupadd --gid ${USER_GID} ${USERNAME} \
@@ -45,15 +48,20 @@ SHELL ["/bin/bash", "-c"]
 # change user to install the ros2 ydlidar driver
 USER ${USER_UID}:${USER_GID}
 
+# Clone the YDlidar ROS2 driver, adapt the Lidar configuration file and build with colcon
 RUN mkdir -p /home/${USERNAME}/ros2_ws/src && cd /home/${USERNAME}/ros2_ws/src \
   && git clone https://github.com/YDLIDAR/ydlidar_ros2_driver.git -b humble\
-  && cd .. && . /opt/ros/humble/setup.bash \
+  && cd ydlidar_ros2_driver/launch \
+  && cp ydlidar_launch.py ${YDLIDAR_MODEL}_launch.py && cp ydlidar_launch_view.py ${YDLIDAR_MODEL}_launch_view.py \
+  && sed -i "s/ydlidar.yaml/$YDLIDAR_MODEL.yaml/g" ${YDLIDAR_MODEL}_launch.py \
+  && sed -i "s/ydlidar.yaml/$YDLIDAR_MODEL.yaml/g" ${YDLIDAR_MODEL}_launch_view.py \
+  && cd ../../.. && . /opt/ros/humble/setup.bash \
   && rosdep update && rosdep install -y -r --from-paths src --ignore-src \
   && colcon build --symlink-install
 
 # Copy the entrypoint and bashrc scripts to start ROS2 without manual sourcing
 COPY entrypoint.sh /entrypoint.sh
-# COPY bashrc /home/${USERNAME}/.bashrc
+COPY bashrc /home/${USERNAME}/.bashrc
 
 # Set up entrypoint and default command
 ENTRYPOINT ["/bin/bash", "/entrypoint.sh"]

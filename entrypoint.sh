@@ -3,6 +3,8 @@ set -e
 
 # Source the ros2 environment setup
 source /opt/ros/humble/setup.bash
+# Source the ros2 drivers and components
+source ~/ros2_ws/install/setup.bash
 
 # Change the permission to run the lidar driver through the serial USB converter
 sudo chmod 666 /dev/ttyUSB0
