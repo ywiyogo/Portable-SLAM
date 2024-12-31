@@ -34,6 +34,10 @@ RUN apt-get update \
   build-essential \
   nano \
   swig \
+  curl \
+  ros-humble-slam-toolbox \
+  ros-humble-navigation2 \
+  ros-humble-nav2-bringup \
   && rm -rf /var/lib/apt/lists/*
 
 # Install the YD lidar driver
@@ -48,7 +52,8 @@ SHELL ["/bin/bash", "-c"]
 # change user to install the ros2 ydlidar driver
 USER ${USER_UID}:${USER_GID}
 
-# Clone the YDlidar ROS2 driver, adapt the Lidar configuration file and build with colcon
+# Clone the source of navigation2, slam_toolbox, YDlidar ROS2 driver
+# Adapt the Lidar configuration file and build with colcon
 RUN mkdir -p /home/${USERNAME}/ros2_ws/src && cd /home/${USERNAME}/ros2_ws/src \
   && git clone https://github.com/YDLIDAR/ydlidar_ros2_driver.git -b humble\
   && cd ydlidar_ros2_driver/launch \
@@ -58,6 +63,7 @@ RUN mkdir -p /home/${USERNAME}/ros2_ws/src && cd /home/${USERNAME}/ros2_ws/src \
   && cd ../../.. && . /opt/ros/humble/setup.bash \
   && rosdep update && rosdep install -y -r --from-paths src --ignore-src \
   && colcon build --symlink-install
+
 
 # Copy the entrypoint and bashrc scripts to start ROS2 without manual sourcing
 COPY entrypoint.sh /entrypoint.sh
