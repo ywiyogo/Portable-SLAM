@@ -1,0 +1,26 @@
+ekf_filter_node:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 0.1
+    two_d_mode: false # Since you're using a handheld device, 3D mode might be necessary
+    transform_time_offset: 0.0
+    transform_timeout: 0.0
+    print_diagnostics: true
+    debug: true
+    debug_out_file: ekf_node.log
+    publish_tf: true
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom
+  
+    imu0: /imu/data_raw
+
+    # Only use IMU for pose estimation since there are no other sources
+    imu0_config: [false, false, false, # Disable position (IMU does not provide this)
+                  true, true, true,    # Enable orientation
+                  false, false, false, # Disable linear velocity (not available)
+                  true, true, true,    # Enable angular velocity
+                  true, true, true]    # Enable orientation covariance
+
+    odom0_relative: false

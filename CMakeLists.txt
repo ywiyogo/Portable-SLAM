@@ -28,10 +28,16 @@ ament_target_dependencies(sense_hat_node
     "rclcpp"
     "sensor_msgs"
 )
-
+# Copy the launch files to the install folder
 install(
   DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
+)
+
+# Copy the config files to the install folder
+install(
+  DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
 )
 
 install(TARGETS sense_hat_node

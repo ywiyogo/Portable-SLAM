@@ -1,8 +1,13 @@
+import os
+
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+
+from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
@@ -12,6 +17,13 @@ def generate_launch_description():
     # Get YDLidar params file path
     ydlidar_params_path = PathJoinSubstitution(
         [FindPackageShare("ydlidar_ros2_driver"), "params", "TminiPro.yaml"]
+    )
+
+    package_dir = get_package_share_directory("portable_slam")
+    ekf_config = os.path.join(package_dir, "config", "imu_odom_config.yaml")
+
+    slam_toolbox_params_config = os.path.join(
+        package_dir, "config", "mapper_params_online_async.yaml"
     )
 
     return LaunchDescription(
@@ -45,31 +57,33 @@ def generate_launch_description():
                     }
                 ],
             ),
+            # robot_localization uses the IMU data to estimate the robot's pose
+            TimerAction(
+                period=1.0,  # Delay for 5 seconds (adjust as needed)
+                actions=[
+                    Node(
+                        package="robot_localization",
+                        executable="ekf_node",
+                        name="ekf_filter_node",
+                        output="screen",
+                        parameters=[ekf_config],
+                    ),
+                ],
+            ),
             # Launch SLAM Toolbox
-            Node(
-                package="slam_toolbox",
-                executable="sync_slam_toolbox_node",
-                name="slam_toolbox",
-                output="screen",
-                parameters=[
-                    {
-                        "use_sim_time": use_sim_time,
-                        "base_frame": "base_link",
-                        "odom_frame": "odom",
-                        "map_frame": "map",
-                        "published_frame": "odom",
-                        "use_pose_extrapolator": True,
-                        "use_nav_sat": False,
-                        "max_laser_range": 20.0,
-                        "map_update_interval": 5.0,
-                        "resolution": 0.05,
-                        "transform_timeout": 0.2,
-                        "scan_topic": "scan",  # Your LiDAR topic
-                        "imu_topic": "imu/data_raw",  # Your IMU topic
-                        "use_imu": True,  # Enable IMU in SLAM Toolbox
-                        "imu_angle_drift": 0.001,
-                        "mode": "mapping",
-                    }
+            TimerAction(
+                period=2.0,
+                actions=[
+                    Node(
+                        package="slam_toolbox",
+                        executable="async_slam_toolbox_node",
+                        name="slam_toolbox",
+                        output="screen",
+                        parameters=[
+                            slam_toolbox_params_config,
+                        ],
+                        arguments=["--ros-args", "--log-level", "debug"]
+                    ),
                 ],
             ),
             # TF2 static transforms
