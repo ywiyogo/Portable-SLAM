@@ -16,11 +16,33 @@ ekf_filter_node:
   
     imu0: /imu/data_raw
 
-    # Only use IMU for pose estimation since there are no other sources
-    imu0_config: [false, false, false, # Disable position (IMU does not provide this)
-                  true, true, true,    # Enable orientation
-                  false, false, false, # Disable linear velocity (not available)
-                  true, true, true,    # Enable angular velocity
-                  true, true, true]    # Enable orientation covariance
+    # IMU configuration with velocity estimation
+    imu0_config: [false, false, false,  # Disable position (IMU does not provide this)
+                 true,  true,  true,    # Enable orientation
+                 true,  true,  true,    # Enable linear velocity (derived from acceleration)
+                 true,  true,  true,    # Enable angular velocity
+                 true,  true,  true]    # Enable orientation covariance
+
+    # Add acceleration config
+    imu0_remove_gravitational_acceleration: true
+    imu0_linear_acceleration_rejection_threshold: 0.5  # Reject large accelerations
+    imu0_angular_velocity_rejection_threshold: 0.5     # Reject large angular velocities
+    
+    # Process noise covariance (15x15 matrix)
+    process_noise_covariance: [0.05,  0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                              0.0,    0.05,   0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                              0.0,    0.0,    0.06,   0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                              0.0,    0.0,    0.0,    0.03,   0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                              0.0,    0.0,    0.0,    0.0,    0.03,   0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                              0.0,    0.0,    0.0,    0.0,    0.0,    0.06,   0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                              0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.025,   0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                              0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.025,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                              0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.04,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                              0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.01,   0.0,    0.0,    0.0,    0.0,    0.0,
+                              0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.01,   0.0,    0.0,    0.0,    0.0,
+                              0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.02,   0.0,    0.0,    0.0,
+                              0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.01,   0.0,    0.0,
+                              0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.01,   0.0,
+                              0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.015]
 
     odom0_relative: false
