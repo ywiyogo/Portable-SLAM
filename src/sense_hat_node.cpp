@@ -19,8 +19,8 @@ public:
   SenseHatNode() : Node("sense_hat_node") {
 
     // Configureable parameter declarations
-    this->declare_parameter("publish_rate", 100.0);     // 100 Hz default
-    this->declare_parameter("latency_threshold", 0.02); // 20ms default
+    this->declare_parameter("publish_rate", 20.0);     // 20 Hz default
+    this->declare_parameter("latency_threshold", 0.1); // 100ms default
     this->declare_parameter("frame_id", "imu_link");
     this->declare_parameter("qos_depth", 10);
 

@@ -67,9 +67,10 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[
             {
                 "use_sim_time": use_sim_time,
-                "publish_rate": 100.0,
+                "publish_rate": 20.0,  # Reduced to match EKF rate
                 "frame_id": "imu_link",
                 "i2c_bus": 5,
+                "qos_depth": 1  # Small queue size for real-time data
             }
         ],
     )
@@ -106,7 +107,6 @@ def generate_launch_description() -> LaunchDescription:
                 "use_sim_time": use_sim_time,
             },
         ],
-        arguments=["--ros-args", "--log-level", "debug"],
         output="screen",
         namespace="",
     )
