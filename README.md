@@ -48,12 +48,19 @@ Where
 * 0x5C represents the Air pressure sensor LPS22HB
 * 0x70 represents the Temperature and humidity sensor SHTC3
 
+Add user to the group permission of i2c and dialout:
+
+```
+sudo usermod -aG i2c $USER
+sudo usermod -aG dialout $USER
+```
 
 ### Software
 - Install ROS2 Jazzy on your Ubuntu 24.04 system, see https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html.
 - Create a new ROS2 workspace: `mkdir -p ~/ros2_ws_slam/src && cd ros2_ws_slam`.
 - Clone and install the YD Lidar SDK outside the ROS2 workspace `git clone https://github.com/YDLIDAR/YDLidar-SDK.git ~/YDLidar-SDK`.
-- Clone the YD Lidar driver for ROS2 inside the ROS2 workspace: `cd ~/ros2_ws_slam/src && git clone https://github.com/YDLIDAR/ydlidar_ros2_driver.git -b humble`.
+- Clone the YD Lidar driver for ROS2 from the `humble` brunch, inside the ROS2 workspace: `cd ~/ros2_ws_slam/src && git clone https://github.com/YDLIDAR/ydlidar_ros2_driver.git -b humble`.
+- Install robot_localization package `sudo apt install ros-${ROS_DISTRO}-robot-localization`
 
 
 ## Getting Started
@@ -61,7 +68,7 @@ Where
 - Clone this repository inside the src folder.
 - Build the package: `colcon build --symlink-install`.
 - If the build is successful, source the local setup `source ./install/setup.bash`.
-- Run the launch script `ros2 launch portable_slam launch_opi5.py`.
+- Run the launch script `ros2 launch portable_slam launch_opi5.py` for Orange Pi 5 or `ros2 launch portable_slam launch_opi5.py` for Raspberry Pi 4B.
 
 ## Implementation
 
