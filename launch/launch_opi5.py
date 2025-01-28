@@ -66,10 +66,10 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
         parameters=[
             {
+                "i2c_bus": 5,
                 "use_sim_time": use_sim_time,
                 "publish_rate": 20.0,  # Reduced to match EKF rate
                 "frame_id": "imu_link",
-                "i2c_bus": 5,
                 "qos_depth": 1  # Small queue size for real-time data
             }
         ],

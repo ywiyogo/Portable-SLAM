@@ -1,0 +1,14 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+        fragment@0 {
+                target = <&i2c5>;   // Targets the I2C5 controller
+
+                __overlay__ {
+                        status = "okay";            // Enables the I2C5 controller
+                        pinctrl-names = "default";  // Names the default pin configuration
+                        pinctrl-0 = <&i2c5m3_xfer>; // Uses mode 3 multiplexing for transfer
+                };
+        };
+};
