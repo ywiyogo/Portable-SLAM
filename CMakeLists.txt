@@ -11,6 +11,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -27,6 +28,7 @@ target_compile_features(sense_hat_node PUBLIC c_std_23 cxx_std_20)
 ament_target_dependencies(sense_hat_node
     "rclcpp"
     "sensor_msgs"
+    "std_srvs"
 )
 # Copy the launch files to the install folder
 install(
@@ -38,7 +40,7 @@ install(
 install(
   DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config
-)
+  )
 
 install(TARGETS sense_hat_node
   DESTINATION lib/${PROJECT_NAME})

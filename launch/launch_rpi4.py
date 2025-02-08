@@ -41,6 +41,7 @@ def generate_launch_description() -> LaunchDescription:
 
     package_dir = get_package_share_directory("portable_slam")
     ekf_config = os.path.join(package_dir, "config", "imu_odom_config.yaml")
+    madgwick_config = os.path.join(package_dir, "config", "imu_filter_madgwick.yaml")
 
     # Launch argument declarations
     declare_use_sim_time_argument = DeclareLaunchArgument(
@@ -68,11 +69,22 @@ def generate_launch_description() -> LaunchDescription:
             {
                 "i2c_bus": 1,
                 "use_sim_time": use_sim_time,
-                "publish_rate": 20.0,  # Reduced to match EKF rate
+                "publish_rate": 20.0,  # Higher rate for better motion tracking
                 "frame_id": "imu_link",
-                "qos_depth": 1  # Small queue size for real-time data
+                "qos_depth": 10,  # Increased for higher frequency data
             }
         ],
+    )
+
+    imu_filter_madgwick_node = Node(
+        package="imu_filter_madgwick",
+        executable="imu_filter_madgwick_node",
+        name="imu_filter",
+        namespace="",
+        parameters=[
+            madgwick_config,
+        ],
+        output="screen",
     )
 
     # slam_toolbox Lifescycle Node declarations and its event triggers
@@ -80,12 +92,16 @@ def generate_launch_description() -> LaunchDescription:
     slam_params_file = LaunchConfiguration("slam_params_file")
     use_lifecycle_manager = LaunchConfiguration("use_lifecycle_manager")
     declare_autostart_cmd = DeclareLaunchArgument(
-        'autostart', default_value='true',
-        description='Automatically startup the slamtoolbox. '
-                    'Ignored when use_lifecycle_manager is true.')
+        "autostart",
+        default_value="true",
+        description="Automatically startup the slamtoolbox. "
+        "Ignored when use_lifecycle_manager is true.",
+    )
     declare_use_lifecycle_manager = DeclareLaunchArgument(
-        'use_lifecycle_manager', default_value='false',
-        description='Enable bond connection during node activation')
+        "use_lifecycle_manager",
+        default_value="false",
+        description="Enable bond connection during node activation",
+    )
     declare_slam_params_file_cmd = DeclareLaunchArgument(
         "slam_params_file",
         default_value=os.path.join(
@@ -157,11 +173,17 @@ def generate_launch_description() -> LaunchDescription:
         name="imu_broadcaster",
         arguments=["0", "0", "0", "0", "0", "0", "base_link", "imu_link"],
     )
+    # The Lidar is 4 cm higher from the base board
     lidar_base_transform = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
         name="laser_broadcaster",
-        arguments=["0", "0", "0", "0", "0", "0", "base_link", "laser_frame"],
+        arguments=["0", "0", "0.4", "0", "0", "0", "base_link", "laser_frame"],
+    )
+
+    start_lidar_1s_delay_node = TimerAction(
+        period=1.0,  # Delay for 1 second
+        actions=[ydlidar_node],
     )
 
     # robot_localization uses the IMU data to estimate the robot's pose
@@ -174,12 +196,14 @@ def generate_launch_description() -> LaunchDescription:
 
     ld.add_action(declare_use_sim_time_argument)
 
-    ld.add_action(ydlidar_node)
     ld.add_action(imu_sense_hat2_node)
-    ld.add_action(start_localization_1s_delay_node)
     ld.add_action(imu_base_transform)
     ld.add_action(lidar_base_transform)
-    # slam_toolbox
+    ld.add_action(imu_filter_madgwick_node)
+    ld.add_action(start_lidar_1s_delay_node)
+    ld.add_action(start_localization_1s_delay_node)
+
+    #slam_toolbox
     ld.add_action(declare_autostart_cmd)
     ld.add_action(declare_use_lifecycle_manager)
     ld.add_action(declare_slam_params_file_cmd)

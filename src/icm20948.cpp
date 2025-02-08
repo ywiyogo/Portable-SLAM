@@ -10,6 +10,8 @@
 #include <string>
 #include <sstream>
 #include <iostream>
+#include <fstream>
+#include <filesystem>
 
 // System headers
 #include <fcntl.h>
@@ -106,11 +108,11 @@ void ICM20948::initializeSensor() {
 
     // Configure gyroscope in bank 2
     selectBank(2);
-    writeRegister(2, GYRO_CONFIG_1, 0x06); // ±2000 dps
+    writeRegister(2, GYRO_CONFIG_1, 0x02); // ±500 dps (changed from 0x06/±2000 dps)
     writeRegister(2, GYRO_SMPLRT_DIV, 0x00); // 1.1 kHz sample rate
     
     // Configure accelerometer in bank 2
-    writeRegister(2, ACCEL_CONFIG, 0x02); // ±16g
+    writeRegister(2, ACCEL_CONFIG, 0x01); // ±4g (changed from 0x02/±16g)
     writeRegister(2, ACCEL_SMPLRT_DIV_1, 0x00); // 1.125 kHz sample rate
     writeRegister(2, ACCEL_SMPLRT_DIV_2, 0x00);
 
@@ -124,10 +126,173 @@ void ICM20948::initializeSensor() {
     // Initialize magnetometer
     initializeMagnetometer();
 
+    // Load calibration if available
+    if (!loadCalibration("/home/ubuntu/.config/portable_slam/imu_calibration.yaml")) {
+      std::cout << "No calibration data found. Please run calibration." << std::endl;
+    }
+
   } catch (const std::exception &e) {
     std::cerr << "Initialization error: " << e.what() << std::endl;
     throw;
   }
+}
+
+Vector3 ICM20948::collectSamples(int numSamples) {
+    Vector3 sum;
+    for (int i = 0; i < numSamples; ++i) {
+        auto data = readSensorData();
+        sum.x += data.gyro.x;
+        sum.y += data.gyro.y;
+        sum.z += data.gyro.z;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return Vector3(sum.x / numSamples, sum.y / numSamples, sum.z / numSamples);
+}
+
+void ICM20948::calibrateGyro() {
+    std::cout << "Calibrating gyroscope. Keep the device still..." << std::endl;
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    Vector3 gyroBias = collectSamples(CALIBRATION_SAMPLES);
+    
+    calibration_.gyroBias.x = convertGyro(gyroBias.x);
+    calibration_.gyroBias.y = convertGyro(gyroBias.y);
+    calibration_.gyroBias.z = convertGyro(gyroBias.z);
+    
+    std::cout << "Gyroscope calibration complete." << std::endl;
+    std::cout << "Bias: X=" << calibration_.gyroBias.x 
+              << " Y=" << calibration_.gyroBias.y 
+              << " Z=" << calibration_.gyroBias.z << std::endl;
+}
+
+void ICM20948::calibrateAccel() {
+    std::cout << "Accelerometer calibration - 6 position calibration" << std::endl;
+    std::cout << "Place the device in 6 different positions..." << std::endl;
+    
+    Vector3 minVals(1e6, 1e6, 1e6);
+    Vector3 maxVals(-1e6, -1e6, -1e6);
+    
+    for (int pos = 0; pos < 6; ++pos) {
+        std::cout << "Position " << pos + 1 << "/6. Press Enter when ready...";
+        std::cin.get();
+        
+        Vector3 samples = collectSamples(CALIBRATION_SAMPLES);
+        
+        minVals.x = std::min(minVals.x, samples.x);
+        minVals.y = std::min(minVals.y, samples.y);
+        minVals.z = std::min(minVals.z, samples.z);
+        
+        maxVals.x = std::max(maxVals.x, samples.x);
+        maxVals.y = std::max(maxVals.y, samples.y);
+        maxVals.z = std::max(maxVals.z, samples.z);
+    }
+    
+    calibration_.accelBias.x = (minVals.x + maxVals.x) / 2.0;
+    calibration_.accelBias.y = (minVals.y + maxVals.y) / 2.0;
+    calibration_.accelBias.z = (minVals.z + maxVals.z) / 2.0;
+    
+    calibration_.accelScale.x = 2.0 / (maxVals.x - minVals.x);
+    calibration_.accelScale.y = 2.0 / (maxVals.y - minVals.y);
+    calibration_.accelScale.z = 2.0 / (maxVals.z - minVals.z);
+    
+    std::cout << "Accelerometer calibration complete." << std::endl;
+}
+
+void ICM20948::calibrateMag() {
+    std::cout << "Magnetometer calibration" << std::endl;
+    std::cout << "Wave the device in a figure-8 pattern for 30 seconds..." << std::endl;
+    
+    Vector3 minVals(1e6, 1e6, 1e6);
+    Vector3 maxVals(-1e6, -1e6, -1e6);
+    
+    auto startTime = std::chrono::steady_clock::now();
+    while (std::chrono::duration_cast<std::chrono::seconds>(
+           std::chrono::steady_clock::now() - startTime).count() < 30) {
+        
+        auto data = readSensorData();
+        
+        minVals.x = std::min(minVals.x, static_cast<double>(data.mag.x));
+        minVals.y = std::min(minVals.y, static_cast<double>(data.mag.y));
+        minVals.z = std::min(minVals.z, static_cast<double>(data.mag.z));
+        
+        maxVals.x = std::max(maxVals.x, static_cast<double>(data.mag.x));
+        maxVals.y = std::max(maxVals.y, static_cast<double>(data.mag.y));
+        maxVals.z = std::max(maxVals.z, static_cast<double>(data.mag.z));
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    
+    calibration_.magBias.x = (minVals.x + maxVals.x) / 2.0;
+    calibration_.magBias.y = (minVals.y + maxVals.y) / 2.0;
+    calibration_.magBias.z = (minVals.z + maxVals.z) / 2.0;
+    
+    calibration_.magScale.x = 2.0 / (maxVals.x - minVals.x);
+    calibration_.magScale.y = 2.0 / (maxVals.y - minVals.y);
+    calibration_.magScale.z = 2.0 / (maxVals.z - minVals.z);
+    
+    std::cout << "Magnetometer calibration complete." << std::endl;
+}
+
+void ICM20948::performCalibration() {
+    calibrateGyro();
+    calibrateAccel();
+    calibrateMag();
+    calibration_.isCalibrated = true;
+    saveCalibration("/home/ubuntu/.config/portable_slam/imu_calibration.yaml");
+}
+
+bool ICM20948::loadCalibration(const std::string& filename) {
+    try {
+        std::ifstream file(filename);
+        if (!file.is_open()) {
+            return false;
+        }
+
+        // Simple YAML parsing
+        std::string line;
+        while (std::getline(file, line)) {
+            std::istringstream iss(line);
+            std::string key;
+            double value;
+            
+            if (std::getline(iss, key, ':') && iss >> value) {
+                if (key == "gyro_bias_x") calibration_.gyroBias.x = value;
+                else if (key == "gyro_bias_y") calibration_.gyroBias.y = value;
+                else if (key == "gyro_bias_z") calibration_.gyroBias.z = value;
+                // Add other calibration parameters...
+            }
+        }
+        
+        calibration_.isCalibrated = true;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Error loading calibration: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool ICM20948::saveCalibration(const std::string& filename) const {
+    try {
+        // Create directory if it doesn't exist
+        std::filesystem::create_directories(
+            std::filesystem::path(filename).parent_path());
+
+        std::ofstream file(filename);
+        if (!file.is_open()) {
+            return false;
+        }
+
+        // Write calibration data in YAML format
+        file << "gyro_bias_x: " << calibration_.gyroBias.x << "\n";
+        file << "gyro_bias_y: " << calibration_.gyroBias.y << "\n";
+        file << "gyro_bias_z: " << calibration_.gyroBias.z << "\n";
+        // Add other calibration parameters...
+
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Error saving calibration: " << e.what() << std::endl;
+        return false;
+    }
 }
 
 void ICM20948::initializeMagnetometer() {
@@ -297,13 +462,28 @@ void ICM20948::printSensorData() {
 }
 
 float ICM20948::convertAcceleration(int16_t rawValue) {
-  return rawValue * ACCEL_SCALE;
+    if (!calibration_.isCalibrated) {
+        return rawValue * ACCEL_SCALE;
+    }
+    float value = rawValue * ACCEL_SCALE;
+    value = (value - calibration_.accelBias.x) * calibration_.accelScale.x;
+    return value;
 }
 
 float ICM20948::convertGyro(int16_t rawValue) {
-  return rawValue * GYRO_SCALE;
+    if (!calibration_.isCalibrated) {
+        return rawValue * GYRO_SCALE;
+    }
+    float value = rawValue * GYRO_SCALE;
+    value -= calibration_.gyroBias.x;
+    return value;
 }
 
 float ICM20948::convertMagneticField(int16_t rawValue) {
-  return rawValue * MAG_SCALE;
+    if (!calibration_.isCalibrated) {
+        return rawValue * MAG_SCALE;
+    }
+    float value = rawValue * MAG_SCALE;
+    value = (value - calibration_.magBias.x) * calibration_.magScale.x;
+    return value;
 }

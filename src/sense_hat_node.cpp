@@ -4,11 +4,14 @@
 #include <memory>
 #include <optional>
 #include <unistd.h>
+#include <filesystem>
+#include <fstream>
 
 // ROS headers
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/magnetic_field.hpp"
+#include "std_srvs/srv/trigger.hpp"
 
 // Project headers
 #include "portable_slam/icm20948.hpp"
@@ -18,12 +21,18 @@ using namespace std::chrono_literals;
 class SenseHatNode : public rclcpp::Node {
 public:
   SenseHatNode() : Node("sense_hat_node") {
+    // Add calibration service
+    calibration_service_ = this->create_service<std_srvs::srv::Trigger>(
+      "calibrate_imu",
+      std::bind(&SenseHatNode::calibrationCallback, this,
+                std::placeholders::_1, std::placeholders::_2));
 
     // Configureable parameter declarations
     this->declare_parameter("publish_rate", 20.0);     // 20 Hz default
     this->declare_parameter("latency_threshold", 0.1); // 100ms default
     this->declare_parameter("frame_id", "imu_link");
     this->declare_parameter("qos_depth", 10);
+    this->declare_parameter("calibration_mode", false); // Add calibration mode parameter
 
     // Create publisher for IMU data with the size of message queue from QoS
     // depth
@@ -71,8 +80,25 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::MagneticField>::SharedPtr publisher_mag_;
   std::unique_ptr<ICM20948> sensor_;
   rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr calibration_service_;
   // Initialize as an optional to handle the first update case
   std::optional<rclcpp::Time> last_publish_time_;
+
+  void calibrationCallback(
+      const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+    try {
+      RCLCPP_INFO(this->get_logger(), "Starting IMU calibration...");
+      sensor_->performCalibration();
+      response->success = true;
+      response->message = "IMU calibration completed successfully";
+      RCLCPP_INFO(this->get_logger(), "IMU calibration completed");
+    } catch (const std::exception& e) {
+      response->success = false;
+      response->message = std::string("Calibration failed: ") + e.what();
+      RCLCPP_ERROR(this->get_logger(), "Calibration failed: %s", e.what());
+    }
+  }
 
   void timer_callback() {
     auto now = this->now();

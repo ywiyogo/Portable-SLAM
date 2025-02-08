@@ -86,6 +86,31 @@ static constexpr uint8_t MAG_CNTL3 = 0x32;         // Control 3
 static constexpr double GRAVITY = 9.81; // m/s^2
 static constexpr double DEG_TO_RAD = M_PI / 180.0;
 
+// Calibration data structures
+struct CalibrationData {
+    struct BiasData {
+        double x{0.0}, y{0.0}, z{0.0};
+    };
+    
+    struct ScaleData {
+        double x{1.0}, y{1.0}, z{1.0};
+    };
+
+    BiasData gyroBias;
+    BiasData accelBias;
+    BiasData magBias;
+    ScaleData accelScale;
+    ScaleData magScale;
+    bool isCalibrated{false};
+};
+
+struct Vector3 {
+    double x, y, z;
+    
+    Vector3(double x_ = 0.0, double y_ = 0.0, double z_ = 0.0) 
+        : x(x_), y(y_), z(z_) {}
+};
+
 struct AccelData {
     int16_t x, y, z;
 };
@@ -111,9 +136,13 @@ private:
   uint8_t current_bank = 0;
 
   // Scaling factors for sensor data conversion
-  static constexpr float ACCEL_SCALE = 16.0f * 9.81f / 32768.0f;  // ±16g range
-  static constexpr float GYRO_SCALE = 2000.0f / 32768.0f;         // ±2000 dps range
+  static constexpr float ACCEL_SCALE = 4.0f * 9.81f / 32768.0f;   // ±4g range
+  static constexpr float GYRO_SCALE = 500.0f / 32768.0f;          // ±500 dps range
   static constexpr float MAG_SCALE = 0.15f;                       // 0.15 μT/LSB
+
+  // Calibration data
+  CalibrationData calibration_;
+  static constexpr int CALIBRATION_SAMPLES = 1000;  // Number of samples for calibration
 
   // Print formatting
   int print_header_interval;
@@ -131,6 +160,12 @@ protected:
   uint8_t readRegister(uint8_t bank, uint8_t reg);
   void writeRegister(uint8_t bank, uint8_t reg, uint8_t value);
   bool isDataReady();
+  
+  // Calibration methods
+  Vector3 collectSamples(int numSamples);
+  void calibrateGyro();
+  void calibrateAccel();
+  void calibrateMag();
 
 public:
   //  Standard deviation for ovariance matrices
@@ -167,6 +202,12 @@ public:
 
   void initializeMagnetometer();
   void initializeSensor();
+  
+  // Calibration methods
+  void performCalibration();
+  bool loadCalibration(const std::string& filename);
+  bool saveCalibration(const std::string& filename) const;
+  bool isCalibrated() const { return calibration_.isCalibrated; }
 
   /**
    The ICM-20948's ADC (Analog-to-Digital Converter) is 16-bit. Each sensor
