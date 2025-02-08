@@ -8,6 +8,7 @@
 // ROS headers
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
+#include "sensor_msgs/msg/magnetic_field.hpp"
 
 // Project headers
 #include "portable_slam/icm20948.hpp"
@@ -27,9 +28,13 @@ public:
     // Create publisher for IMU data with the size of message queue from QoS
     // depth
     const int qos_depth = this->get_parameter("qos_depth").as_int();
-    auto qos = rclcpp::QoS(rclcpp::KeepLast(qos_depth));
+    auto qos = rclcpp::QoS(rclcpp::KeepLast(qos_depth))
+        .reliability(rclcpp::ReliabilityPolicy::Reliable)
+        .durability(rclcpp::DurabilityPolicy::Volatile)
+        .history(rclcpp::HistoryPolicy::KeepLast);
     publisher_ =
-        this->create_publisher<sensor_msgs::msg::Imu>("imu/data_raw", qos);
+        this->create_publisher<sensor_msgs::msg::Imu>("/imu/data_raw", qos);
+    publisher_mag_ = this->create_publisher<sensor_msgs::msg::MagneticField>("imu/mag", qos);
 
     double rate = this->get_parameter("publish_rate").as_double();
     if (rate <= 0.0) {
@@ -50,8 +55,8 @@ public:
       sensor_ = std::make_unique<ICM20948>(bus);
       RCLCPP_INFO(this->get_logger(), "IMU sensor initialized successfully");
     } catch (const std::exception &e) {
-      RCLCPP_ERROR(this->get_logger(), "Failed to initialize IMU sensor: %s",
-                   e.what());
+      RCLCPP_ERROR(this->get_logger(), "Failed to initialize IMU sensor: %s bus %d",
+                   e.what(), bus);
       rclcpp::shutdown();
     }
   }
@@ -63,6 +68,7 @@ public:
 
 private:
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::MagneticField>::SharedPtr publisher_mag_;
   std::unique_ptr<ICM20948> sensor_;
   rclcpp::TimerBase::SharedPtr timer_;
   // Initialize as an optional to handle the first update case
@@ -82,30 +88,35 @@ private:
     last_publish_time_ = now;
     try {
       auto message = sensor_msgs::msg::Imu();
-
+      auto mag_message = sensor_msgs::msg::MagneticField();
       // Set header and using the same timestamp for both checks and message
       message.header.stamp = now;
+      mag_message.header.stamp = now;
       message.header.frame_id = this->get_parameter("frame_id").as_string();
+      mag_message.header.frame_id = this->get_parameter("frame_id").as_string();
 
       // Read acceleration data
-      auto [accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z] =
+      auto imu_data =
           sensor_->readSensorData();
 
       // Convert and set linear acceleration (m/s^2)
-      message.linear_acceleration.x = sensor_->convertAcceleration(accel_x);
-      message.linear_acceleration.y = sensor_->convertAcceleration(accel_y);
-      message.linear_acceleration.z = sensor_->convertAcceleration(accel_z);
+      message.linear_acceleration.x = sensor_->convertAcceleration(imu_data.accel.x);
+      message.linear_acceleration.y = sensor_->convertAcceleration(imu_data.accel.y);
+      message.linear_acceleration.z = sensor_->convertAcceleration(imu_data.accel.z);
 
       // Convert and set angular velocity deg/s to rad/s
-      message.angular_velocity.x = sensor_->convertGyro(gyro_x) * M_PI / 180.0;
-      message.angular_velocity.y = sensor_->convertGyro(gyro_y) * M_PI / 180.0;
-      message.angular_velocity.z = sensor_->convertGyro(gyro_z) * M_PI / 180.0;
+      message.angular_velocity.x = sensor_->convertGyro(imu_data.gyro.x) * M_PI / 180.0;
+      message.angular_velocity.y = sensor_->convertGyro(imu_data.gyro.y) * M_PI / 180.0;
+      message.angular_velocity.z = sensor_->convertGyro(imu_data.gyro.z) * M_PI / 180.0;
 
+      mag_message.magnetic_field.x = sensor_->convertMagneticField(imu_data.mag.x);
+      mag_message.magnetic_field.y = sensor_->convertMagneticField(imu_data.mag.y);
+      mag_message.magnetic_field.z = sensor_->convertMagneticField(imu_data.mag.z);
       // The covariance matrix is a 3x3 matrix stored as a 9-element array,
       // where:
       // Diagonal elements (0,4,8) represent variances for x, y, z.
       // Off-diagonal elements represent correlations between axes.
-      // Variance = standard_deviation².
+      // Variance = standard_deviation2.
       // Lower values indicate higher confidence in measurements.
       // Higher values indicate more uncertainty.
 
@@ -119,11 +130,15 @@ private:
       message.angular_velocity_covariance[4] = sensor_->GYRO_VARIANCE; // yy
       message.angular_velocity_covariance[8] = sensor_->GYRO_VARIANCE; // zz
 
+      mag_message.magnetic_field_covariance[0] = sensor_->MAG_VARIANCE;
+      mag_message.magnetic_field_covariance[4] = sensor_->MAG_VARIANCE;
+      mag_message.magnetic_field_covariance[8] = sensor_->MAG_VARIANCE;
       // Off-diagonal elements (set to 0 if measurements are independent)
       for (size_t i = 0; i < 9; ++i) {
         if (i != 0 && i != 4 && i != 8) {
           message.linear_acceleration_covariance[i] = 0.0;
           message.angular_velocity_covariance[i] = 0.0;
+          mag_message.magnetic_field_covariance[i] = 0.0;
         }
       }
 
@@ -132,11 +147,16 @@ private:
         message.orientation_covariance[i] = -1;
       }
 
-      // Publish the message
+      // Only publish magnetometer data if it's valid (non-zero)
+      if (imu_data.mag.x != 0 || imu_data.mag.y != 0 || imu_data.mag.z != 0) {
+        publisher_mag_->publish(mag_message);
+      }
+      
+      // Always publish IMU data since accelerometer and gyroscope update faster
       publisher_->publish(message);
     } catch (const std::exception &e) {
-      RCLCPP_ERROR(this->get_logger(),
-                   "[SenseHat]Error reading sensor data: %s", e.what());
+      RCLCPP_WARN(this->get_logger(),
+                  "[SenseHat] Error reading sensor data: %s", e.what());
     }
   }
 };
