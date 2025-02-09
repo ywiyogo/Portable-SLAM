@@ -1,11 +1,11 @@
 // C++ Standard Library
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <unistd.h>
-#include <filesystem>
-#include <fstream>
 
 // ROS headers
 #include "rclcpp/rclcpp.hpp"
@@ -23,27 +23,29 @@ public:
   SenseHatNode() : Node("sense_hat_node") {
     // Add calibration service
     calibration_service_ = this->create_service<std_srvs::srv::Trigger>(
-      "calibrate_imu",
-      std::bind(&SenseHatNode::calibrationCallback, this,
-                std::placeholders::_1, std::placeholders::_2));
+        "calibrate_imu",
+        std::bind(&SenseHatNode::calibrationCallback, this,
+                  std::placeholders::_1, std::placeholders::_2));
 
     // Configureable parameter declarations
     this->declare_parameter("publish_rate", 20.0);     // 20 Hz default
-    this->declare_parameter("latency_threshold", 0.1); // 100ms default
+    this->declare_parameter("latency_threshold", 0.2); // 200ms default
     this->declare_parameter("frame_id", "imu_link");
     this->declare_parameter("qos_depth", 10);
-    this->declare_parameter("calibration_mode", false); // Add calibration mode parameter
+    this->declare_parameter("calibration_mode",
+                            false); // Add calibration mode parameter
 
     // Create publisher for IMU data with the size of message queue from QoS
     // depth
     const int qos_depth = this->get_parameter("qos_depth").as_int();
     auto qos = rclcpp::QoS(rclcpp::KeepLast(qos_depth))
-        .reliability(rclcpp::ReliabilityPolicy::Reliable)
-        .durability(rclcpp::DurabilityPolicy::Volatile)
-        .history(rclcpp::HistoryPolicy::KeepLast);
+                   .reliability(rclcpp::ReliabilityPolicy::Reliable)
+                   .durability(rclcpp::DurabilityPolicy::Volatile)
+                   .history(rclcpp::HistoryPolicy::KeepLast);
     publisher_ =
         this->create_publisher<sensor_msgs::msg::Imu>("/imu/data_raw", qos);
-    publisher_mag_ = this->create_publisher<sensor_msgs::msg::MagneticField>("imu/mag", qos);
+    publisher_mag_ =
+        this->create_publisher<sensor_msgs::msg::MagneticField>("imu/mag", qos);
 
     double rate = this->get_parameter("publish_rate").as_double();
     if (rate <= 0.0) {
@@ -64,8 +66,8 @@ public:
       sensor_ = std::make_unique<ICM20948>(bus);
       RCLCPP_INFO(this->get_logger(), "IMU sensor initialized successfully");
     } catch (const std::exception &e) {
-      RCLCPP_ERROR(this->get_logger(), "Failed to initialize IMU sensor: %s bus %d",
-                   e.what(), bus);
+      RCLCPP_ERROR(this->get_logger(),
+                   "Failed to initialize IMU sensor: %s bus %d", e.what(), bus);
       rclcpp::shutdown();
     }
   }
@@ -93,7 +95,7 @@ private:
       response->success = true;
       response->message = "IMU calibration completed successfully";
       RCLCPP_INFO(this->get_logger(), "IMU calibration completed");
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
       response->success = false;
       response->message = std::string("Calibration failed: ") + e.what();
       RCLCPP_ERROR(this->get_logger(), "Calibration failed: %s", e.what());
@@ -104,9 +106,10 @@ private:
     auto now = this->now();
     if (last_publish_time_.has_value()) {
       double dt = (now - last_publish_time_.value()).seconds();
-      double threshold = this->get_parameter("latency_threshold").as_double();
+      double threshold =
+          1000. / this->get_parameter("publish_rate").as_double();
 
-      if (dt > threshold) { // More than 20ms between updates
+      if (dt > threshold) {
         RCLCPP_WARN(this->get_logger(),
                     "High publish latency detected: %.3f ms", dt * 1000);
       }
@@ -122,22 +125,30 @@ private:
       mag_message.header.frame_id = this->get_parameter("frame_id").as_string();
 
       // Read acceleration data
-      auto imu_data =
-          sensor_->readSensorData();
+      auto imu_data = sensor_->readSensorData();
 
       // Convert and set linear acceleration (m/s^2)
-      message.linear_acceleration.x = sensor_->convertAcceleration(imu_data.accel.x);
-      message.linear_acceleration.y = sensor_->convertAcceleration(imu_data.accel.y);
-      message.linear_acceleration.z = sensor_->convertAcceleration(imu_data.accel.z);
+      message.linear_acceleration.x =
+          sensor_->convertAcceleration(imu_data.accel.x);
+      message.linear_acceleration.y =
+          sensor_->convertAcceleration(imu_data.accel.y);
+      message.linear_acceleration.z =
+          sensor_->convertAcceleration(imu_data.accel.z);
 
       // Convert and set angular velocity deg/s to rad/s
-      message.angular_velocity.x = sensor_->convertGyro(imu_data.gyro.x) * M_PI / 180.0;
-      message.angular_velocity.y = sensor_->convertGyro(imu_data.gyro.y) * M_PI / 180.0;
-      message.angular_velocity.z = sensor_->convertGyro(imu_data.gyro.z) * M_PI / 180.0;
+      message.angular_velocity.x =
+          sensor_->convertGyro(imu_data.gyro.x) * M_PI / 180.0;
+      message.angular_velocity.y =
+          sensor_->convertGyro(imu_data.gyro.y) * M_PI / 180.0;
+      message.angular_velocity.z =
+          sensor_->convertGyro(imu_data.gyro.z) * M_PI / 180.0;
 
-      mag_message.magnetic_field.x = sensor_->convertMagneticField(imu_data.mag.x);
-      mag_message.magnetic_field.y = sensor_->convertMagneticField(imu_data.mag.y);
-      mag_message.magnetic_field.z = sensor_->convertMagneticField(imu_data.mag.z);
+      mag_message.magnetic_field.x =
+          sensor_->convertMagneticField(imu_data.mag.x);
+      mag_message.magnetic_field.y =
+          sensor_->convertMagneticField(imu_data.mag.y);
+      mag_message.magnetic_field.z =
+          sensor_->convertMagneticField(imu_data.mag.z);
       // The covariance matrix is a 3x3 matrix stored as a 9-element array,
       // where:
       // Diagonal elements (0,4,8) represent variances for x, y, z.
@@ -177,7 +188,7 @@ private:
       if (imu_data.mag.x != 0 || imu_data.mag.y != 0 || imu_data.mag.z != 0) {
         publisher_mag_->publish(mag_message);
       }
-      
+
       // Always publish IMU data since accelerometer and gyroscope update faster
       publisher_->publish(message);
     } catch (const std::exception &e) {
