@@ -1,5 +1,5 @@
 import os
-
+from math import pi
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -70,7 +70,7 @@ def generate_launch_description() -> LaunchDescription:
                 "use_sim_time": use_sim_time,
                 "publish_rate": 20.0,  # Reduced to match EKF rate
                 "frame_id": "imu_link",
-                "qos_depth": 1  # Small queue size for real-time data
+                "qos_depth": 1,  # Small queue size for real-time data
             }
         ],
     )
@@ -80,12 +80,16 @@ def generate_launch_description() -> LaunchDescription:
     slam_params_file = LaunchConfiguration("slam_params_file")
     use_lifecycle_manager = LaunchConfiguration("use_lifecycle_manager")
     declare_autostart_cmd = DeclareLaunchArgument(
-        'autostart', default_value='true',
-        description='Automatically startup the slamtoolbox. '
-                    'Ignored when use_lifecycle_manager is true.')
+        "autostart",
+        default_value="true",
+        description="Automatically startup the slamtoolbox. "
+        "Ignored when use_lifecycle_manager is true.",
+    )
     declare_use_lifecycle_manager = DeclareLaunchArgument(
-        'use_lifecycle_manager', default_value='false',
-        description='Enable bond connection during node activation')
+        "use_lifecycle_manager",
+        default_value="false",
+        description="Enable bond connection during node activation",
+    )
     declare_slam_params_file_cmd = DeclareLaunchArgument(
         "slam_params_file",
         default_value=os.path.join(
@@ -155,7 +159,7 @@ def generate_launch_description() -> LaunchDescription:
         package="tf2_ros",
         executable="static_transform_publisher",
         name="imu_broadcaster",
-        arguments=["0", "0", "0", "0", "0", "0", "base_link", "imu_link"],
+        arguments=["0", "0", "0", str(pi), str(pi), str(pi), "base_link", "imu_link"],
     )
     lidar_base_transform = Node(
         package="tf2_ros",

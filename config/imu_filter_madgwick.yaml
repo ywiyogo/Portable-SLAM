@@ -6,8 +6,7 @@ madgwick:
     publish_debug_topics: true  # Publish debug information
     publish_tf: false           # Disable publishing TF (handled by robot_localization)
     world_frame: "enu"          # East-North-Up frame for orientation
-    gain: 0.05                 # Reduced for more stable orientation (typical value)
-    zeta: 0.0                   # Damping factor (default is fine)
-    # constant_dt: 0.05           # Fixed time step (20Hz)
+    gain: 0.3                   # Increased for faster response to hand movements
+    zeta: 0.1                   # Added damping to reduce oscillations
     orientation_stddev: 0.01    # Standard deviation for orientation estimate
     fixed_frame: "base_link"    # Fixed frame for orientation

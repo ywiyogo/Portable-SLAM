@@ -1,0 +1,40 @@
+flowchart TD
+    subgraph Hardware
+        YDLidar["YDLidar Node\n/scan"]
+        SenseHat["Sense Hat Node\n/imu/data_raw"]
+    end
+
+    subgraph "Sensor Processing"
+        IMU_Filter["IMU Filter Madgwick\n/imu/data"]
+    end
+
+    subgraph "SLAM"
+        EKF["EKF Filter Node\n/odometry/filtered"]
+        SLAM_Toolbox["SLAM Toolbox\n/map"]
+    end
+
+    subgraph "TF Tree"
+        base_link["base_link"]
+        imu_link["imu_link"]
+        laser_frame["laser_frame"]
+        map["map"]
+        odom["odom"]
+    end
+
+    %% Data Flow
+    SenseHat -->|/imu/data_raw| IMU_Filter
+    IMU_Filter -->|/imu/data| EKF
+    YDLidar -->|/scan| SLAM_Toolbox
+    EKF -->|/odometry/filtered| SLAM_Toolbox
+    SLAM_Toolbox --> |/pose| EKF
+
+    %% TF Relationships
+    base_link -->|static tf| laser_frame
+    map --> odom
+    odom --> imu_link
+    odom --> base_link
+
+    class YDLidar,SenseHat hardware
+    class IMU_Filter,EKF processing
+    class SLAM_Toolbox slam
+    class base_link,imu_link,laser_frame tf

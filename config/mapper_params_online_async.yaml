@@ -18,25 +18,30 @@ slam_toolbox:
 
     use_odom: true
     odom_topic: "/odometry/filtered"
+
+    use_pose_extrapolation: true # Important for smooth motion
+
     debug_logging: true
     throttle_scans: 1
-    transform_publish_period: 0.02 #if 0 never publishes odometry
+    transform_publish_period: 0.05 #if 0 never publishes TF. 0.05s = 20Hz
     map_update_interval: 5.0
     resolution: 0.05
-    min_laser_range: 0.1 #for rastering images
-    max_laser_range: 12.0 #for rastering images
-    minimum_time_interval: 0.5
-    transform_timeout: 0.1
+    min_laser_range: 1.0
+    max_laser_range: 12.0
+    # controls how frequently slam_toolbox will process new laser scans
+    minimum_time_interval: 0.4
+    # how long slam_toolbox will wait for a transform to become available
+    transform_timeout: 0.3 # Give more time to transform due to low compute performace
     tf_buffer_duration: 60.0
-    stack_size_to_use: 40000000 #// program needs a larger stack size to serialize large maps
+    stack_size_to_use: 60000000 #// program needs a larger stack size to serialize large maps
     enable_interactive_mode: true
 
     # General Parameters
     use_scan_matching: true
     use_scan_barycenter: true
-    minimum_travel_distance: 0.2
-    minimum_travel_heading: 0.2
-    scan_buffer_size: 20
+    minimum_travel_distance: 0.1
+    minimum_travel_heading: 0.1
+    scan_buffer_size: 30 # Larger buffer for smoother operation
     scan_buffer_maximum_scan_distance: 12.0
     link_match_minimum_response_fine: 0.1
     link_scan_maximum_distance: 1.5
@@ -67,3 +72,8 @@ slam_toolbox:
     minimum_angle_penalty: 0.9
     minimum_distance_penalty: 0.5
     use_response_expansion: true
+
+    # Motion Distortion Parameters
+    use_scan_deskewing: true # Important for motion compensation
+    motion_model_max_angle: 0.4 # Increased for quicker hand movements
+    motion_model_min_angle: 0.05 # More sensitive to small rotations

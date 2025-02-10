@@ -1,5 +1,5 @@
 import os
-
+from math import pi
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -12,6 +12,7 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition
 from launch.events import matches_action
+from launch.event_handlers import OnProcessStart
 from launch.substitutions import (
     LaunchConfiguration,
     PathJoinSubstitution,
@@ -26,7 +27,6 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 from lifecycle_msgs.msg import Transition
 from ament_index_python.packages import get_package_share_directory
-
 
 def generate_launch_description() -> LaunchDescription:
     """Define a generate_launch_description function that returns the LaunchDescription"""
@@ -71,7 +71,6 @@ def generate_launch_description() -> LaunchDescription:
                 "use_sim_time": use_sim_time,
                 "publish_rate": 20.0,  # Higher rate for better motion tracking
                 "frame_id": "imu_link",
-                "qos_depth": 10,  # Increased for higher frequency data
             }
         ],
     )
@@ -159,13 +158,22 @@ def generate_launch_description() -> LaunchDescription:
         ),
     )
 
-    localization_node = Node(
+    ekf_filter_node = Node(
         package="robot_localization",
         executable="ekf_node",
         name="ekf_filter_node",
         output="screen",
+        emulate_tty=True,
         parameters=[ekf_config],
     )
+
+    launch_slam_after_ekf = RegisterEventHandler(
+        event_handler=OnProcessStart(
+            target_action=ekf_filter_node,
+            on_start=[start_async_slam_toolbox_node, slam_toolbox_configure_event, slam_toolbox_activate_event]
+        )
+    )
+
     # TF2 static transforms
     imu_base_transform = Node(
         package="tf2_ros",
@@ -181,34 +189,27 @@ def generate_launch_description() -> LaunchDescription:
         arguments=["0", "0", "0.4", "0", "0", "0", "base_link", "laser_frame"],
     )
 
-    start_lidar_1s_delay_node = TimerAction(
-        period=1.0,  # Delay for 1 second
-        actions=[ydlidar_node],
-    )
-
     # robot_localization uses the IMU data to estimate the robot's pose
-    start_localization_1s_delay_node = TimerAction(
+    start_ekf_1s_delay_node = TimerAction(
         period=1.0,  # Delay for 1 second
-        actions=[localization_node],
+        actions=[ekf_filter_node],
     )
 
     ld = LaunchDescription()
-
+    
     ld.add_action(declare_use_sim_time_argument)
 
     ld.add_action(imu_sense_hat2_node)
     ld.add_action(imu_base_transform)
     ld.add_action(lidar_base_transform)
     ld.add_action(imu_filter_madgwick_node)
-    ld.add_action(start_lidar_1s_delay_node)
-    ld.add_action(start_localization_1s_delay_node)
+    ld.add_action(ydlidar_node)
+    ld.add_action(start_ekf_1s_delay_node)
 
     #slam_toolbox
     ld.add_action(declare_autostart_cmd)
     ld.add_action(declare_use_lifecycle_manager)
     ld.add_action(declare_slam_params_file_cmd)
-    ld.add_action(start_async_slam_toolbox_node)
-    ld.add_action(slam_toolbox_configure_event)
-    ld.add_action(slam_toolbox_activate_event)
+    ld.add_action(launch_slam_after_ekf)
 
     return ld
