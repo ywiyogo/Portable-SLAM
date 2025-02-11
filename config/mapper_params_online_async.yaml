@@ -16,20 +16,17 @@ slam_toolbox:
     use_map_saver: true
     mode: mapping #localization
 
-    use_odom: true
-    odom_topic: "/odometry/filtered"
-
     use_pose_extrapolation: true # Important for smooth motion
 
     debug_logging: true
     throttle_scans: 1
     transform_publish_period: 0.05 #if 0 never publishes TF. 0.05s = 20Hz
-    map_update_interval: 5.0
+    map_update_interval: 2.0
     resolution: 0.05
-    min_laser_range: 1.0
+    min_laser_range: 2.0
     max_laser_range: 12.0
     # controls how frequently slam_toolbox will process new laser scans
-    minimum_time_interval: 0.4
+    minimum_time_interval: 0.2
     # how long slam_toolbox will wait for a transform to become available
     transform_timeout: 0.3 # Give more time to transform due to low compute performace
     tf_buffer_duration: 60.0

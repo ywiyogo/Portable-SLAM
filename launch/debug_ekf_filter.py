@@ -1,12 +1,11 @@
 import os
 from math import pi
 from launch import LaunchDescription
-from launch.event_handlers import OnProcessStart
 
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
-from launch.actions import DeclareLaunchArgument, RegisterEventHandler, ExecuteProcess
+from launch.actions import DeclareLaunchArgument
 
 from ament_index_python.packages import get_package_share_directory
 
@@ -28,17 +27,6 @@ def generate_launch_description():
         "use_sim_time",
         default_value="false",
         description="Use simulation (Gazebo) clock if true",
-    )
-
-    # Add in generate_launch_description before creating nodes
-    cleanup_dds = ExecuteProcess(
-        cmd=[
-            "bash",
-            "-c",
-            "rm -rf /dev/shm/fastrtps* /dev/shm/sem.fastrtps* /tmp/fastdds_*",
-        ],
-        output="screen",
-        shell=True,
     )
 
     # Launch YDLidar node
@@ -86,12 +74,6 @@ def generate_launch_description():
         parameters=[ekf_config],
     )
 
-    launch_ekf_after_lidar_imu = RegisterEventHandler(
-        event_handler=OnProcessStart(
-            target_action=ydlidar_node, on_start=ekf_filter_node
-        )
-    )
-
     # TF2 static transforms
     # The IMU sensor of Sense HAT is rotated 180deg on Z axis
     imu_base_transform = Node(
@@ -109,15 +91,13 @@ def generate_launch_description():
     )
 
     ld = LaunchDescription()
-    ld.add_action(cleanup_dds)
 
     ld.add_action(declare_use_sim_time_argument)
-
+    ld.add_action(ekf_filter_node)
     ld.add_action(imu_sense_hat2_node)
     ld.add_action(imu_base_transform)
     ld.add_action(lidar_base_transform)
     ld.add_action(imu_filter_madgwick_node)
     ld.add_action(ydlidar_node)
-    ld.add_action(launch_ekf_after_lidar_imu)
 
     return ld

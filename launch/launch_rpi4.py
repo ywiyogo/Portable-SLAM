@@ -4,11 +4,8 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     EmitEvent,
-    ExecuteProcess,
-    IncludeLaunchDescription,
     LogInfo,
     RegisterEventHandler,
-    TimerAction,
 )
 from launch.conditions import IfCondition
 from launch.events import matches_action
@@ -23,10 +20,10 @@ from launch_ros.actions import Node, LifecycleNode
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.events.lifecycle import ChangeState
 from launch_ros.event_handlers import OnStateTransition
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 from lifecycle_msgs.msg import Transition
 from ament_index_python.packages import get_package_share_directory
+
 
 def generate_launch_description() -> LaunchDescription:
     """Define a generate_launch_description function that returns the LaunchDescription"""
@@ -165,13 +162,9 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
         emulate_tty=True,
         parameters=[ekf_config],
-    )
-
-    launch_slam_after_ekf = RegisterEventHandler(
-        event_handler=OnProcessStart(
-            target_action=ekf_filter_node,
-            on_start=[start_async_slam_toolbox_node, slam_toolbox_configure_event, slam_toolbox_activate_event]
-        )
+        # for odom input of slam_toolbox.
+        # alternative would be assigning odom_topic: "/odometry/filtered" in the config file
+        remappings=[("/odometry/filtered", "/odom")],
     )
 
     # TF2 static transforms
@@ -188,25 +181,53 @@ def generate_launch_description() -> LaunchDescription:
         name="laser_broadcaster",
         arguments=["0", "0", "0.4", "0", "0", "0", "base_link", "laser_frame"],
     )
+    # Alternative method to estimate odometry from lidar scan.
+    # However, rf2o doesn'T support IMU integration
+    rf2o_node = Node(
+        package="rf2o_laser_odometry",
+        executable="rf2o_laser_odometry_node",
+        name="rf2o_laser_odometry",
+        parameters=[
+            {
+                "laser_scan_topic": "/scan",
+                "odom_topic": "/odom",
+                "publish_tf": True,
+                "base_frame_id": "base_link",
+                "odom_frame_id": "odom",
+                "init_pose_from_topic": "",
+                "freq": 10.0,
+            }
+        ],
+    )
+
+    launch_slam_after_ekf = RegisterEventHandler(
+        event_handler=OnProcessStart(
+            target_action=ydlidar_node,
+            on_start=[
+                start_async_slam_toolbox_node,
+                slam_toolbox_configure_event,
+                slam_toolbox_activate_event,
+            ],
+        )
+    )
 
     # robot_localization uses the IMU data to estimate the robot's pose
-    start_ekf_1s_delay_node = TimerAction(
-        period=1.0,  # Delay for 1 second
-        actions=[ekf_filter_node],
+    launch_rf2o_after_lidar_imu = RegisterEventHandler(
+        event_handler=OnProcessStart(target_action=ydlidar_node, on_start=rf2o_node)
     )
 
     ld = LaunchDescription()
-    
-    ld.add_action(declare_use_sim_time_argument)
 
+    ld.add_action(declare_use_sim_time_argument)
+    ld.add_action(ekf_filter_node)
     ld.add_action(imu_sense_hat2_node)
     ld.add_action(imu_base_transform)
     ld.add_action(lidar_base_transform)
     ld.add_action(imu_filter_madgwick_node)
     ld.add_action(ydlidar_node)
-    ld.add_action(start_ekf_1s_delay_node)
+    # ld.add_action(launch_rf2o_after_lidar_imu)
 
-    #slam_toolbox
+    # slam_toolbox
     ld.add_action(declare_autostart_cmd)
     ld.add_action(declare_use_lifecycle_manager)
     ld.add_action(declare_slam_params_file_cmd)
