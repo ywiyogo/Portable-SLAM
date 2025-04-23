@@ -9,7 +9,7 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition
 from launch.events import matches_action
-from launch.event_handlers import OnProcessStart
+from launch.event_handlers import OnProcessStart, OnShutdown
 from launch.substitutions import (
     LaunchConfiguration,
     PathJoinSubstitution,
@@ -17,6 +17,7 @@ from launch.substitutions import (
     NotSubstitution,
 )
 from launch_ros.actions import Node, LifecycleNode
+from launch.actions import ExecuteProcess
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.events.lifecycle import ChangeState
 from launch_ros.event_handlers import OnStateTransition
@@ -233,5 +234,48 @@ def generate_launch_description() -> LaunchDescription:
     ld.add_action(declare_use_lifecycle_manager)
     ld.add_action(declare_slam_params_file_cmd)
     ld.add_action(launch_slam_after_ekf)
+
+    # Shutdown event handlers
+    def on_shutdown(event, context):
+        return [
+            LogInfo(msg="[Shutdown] Initiating graceful shutdown sequence..."),
+            # First stop regular nodes and services
+            ExecuteProcess(
+                cmd=['ros2', 'service', 'call', '/ydlidar_ros2_driver_node/stop_scan', 'std_srvs/srv/Empty', '{}'],
+                output='screen'
+            ),
+            # Small delay to ensure lidar stops properly
+            ExecuteProcess(
+                cmd=['sleep', '0.5'],
+                output='screen'
+            ),
+            # Reset lidar more thoroughly
+            ExecuteProcess(
+                cmd=['ros2', 'service', 'call', '/ydlidar_ros2_driver_node/reset', 'std_srvs/srv/Empty', '{}'],
+                output='screen'
+            ),
+            ExecuteProcess(
+                cmd=['ros2', 'service', 'call', '/ekf_filter_node/reset', 'std_srvs/srv/Empty', '{}'],
+                output='screen'
+            ),
+            # Then handle lifecycle node shutdown
+            EmitEvent(
+                event=ChangeState(
+                    lifecycle_node_matcher=matches_action(start_async_slam_toolbox_node),
+                    transition_id=Transition.TRANSITION_ACTIVE_SHUTDOWN,
+                ),
+                condition=IfCondition(
+                    LaunchConfiguration('use_lifecycle_manager', default='false')
+                )
+            ),
+            LogInfo(msg="[Shutdown] Shutdown sequence complete")
+        ]
+
+    shutdown_handler = RegisterEventHandler(
+        OnShutdown(
+            on_shutdown=on_shutdown
+        )
+    )
+    ld.add_action(shutdown_handler)
 
     return ld
