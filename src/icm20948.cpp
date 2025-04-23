@@ -7,12 +7,12 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <thread>
-#include <format>
 
 // System headers
 #include <fcntl.h>
@@ -72,7 +72,8 @@ void ICM20948::writeRegister(uint8_t bank, uint8_t reg, uint8_t value) {
   selectBank(bank);
   uint8_t buffer[2] = {reg, value};
   if (write(i2c_file, buffer, 2) != 2) {
-    std::string error = std::format("Failed to write register {:#x} value {:#x}", reg, value);
+    std::string error =
+        std::format("Failed to write register {:#x} value {:#x}", reg, value);
     throw std::runtime_error(error.c_str());
   }
 }
@@ -179,11 +180,12 @@ void ICM20948::calibrateAccel() {
   Vector3 maxVals(-1e6, -1e6, -1e6);
 
   for (int pos = 0; pos < 6; ++pos) {
-    std::cout << "Position " << pos + 1 << "/6. Press Enter when ready...";
-    std::cin.get();
-
+    std::cout << "Position " << pos + 1 << "/6. Waiting for 5 secs" << std::endl
+              << std::flush;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+    std::cout << "Calibrating ..." << std::endl << std::flush;
     Vector3 samples = collectSamples(CALIBRATION_SAMPLES);
-
+    std::cout << "Finished" << std::endl << std::flush;
     minVals.x = std::min(minVals.x, samples.x);
     minVals.y = std::min(minVals.y, samples.y);
     minVals.z = std::min(minVals.z, samples.z);
