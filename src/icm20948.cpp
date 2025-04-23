@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <format>
 
 // System headers
 #include <fcntl.h>
@@ -71,7 +72,8 @@ void ICM20948::writeRegister(uint8_t bank, uint8_t reg, uint8_t value) {
   selectBank(bank);
   uint8_t buffer[2] = {reg, value};
   if (write(i2c_file, buffer, 2) != 2) {
-    throw std::runtime_error("Failed to write register");
+    std::string error = std::format("Failed to write register {:#x} value {:#x}", reg, value);
+    throw std::runtime_error(error.c_str());
   }
 }
 
@@ -109,20 +111,19 @@ void ICM20948::initializeSensor() {
 
     // Configure gyroscope in bank 2
     selectBank(2);
-    writeRegister(2, GYRO_CONFIG_1,
-                  0x02); // ±500 dps (changed from 0x06/±2000 dps)
-    writeRegister(2, GYRO_SMPLRT_DIV, 0x00); // 1.1 kHz sample rate
+    writeRegister(2, GYRO_CONFIG_1, GYRO_FS_SEL_0); // ±250 dps
+    writeRegister(2, GYRO_SMPLRT_DIV, 0x00);        // 1.1 kHz sample rate
 
     // Configure accelerometer in bank 2
-    writeRegister(2, ACCEL_CONFIG, 0x01); // ±4g (changed from 0x02/±16g)
-    writeRegister(2, ACCEL_SMPLRT_DIV_1, 0x00); // 1.125 kHz sample rate
+    writeRegister(2, ACCEL_CONFIG, ACCEL_SCALE.at(0)); // set to ±2g
+    writeRegister(2, ACCEL_SMPLRT_DIV_1, 0x00);        // 1.125 kHz sample rate
     writeRegister(2, ACCEL_SMPLRT_DIV_2, 0x00);
 
     // Return to bank 0 for normal operation
     selectBank(0);
 
     // Enable I2C master mode
-    writeRegister(0, USER_CTRL, 0x20);
+    writeRegister(0, USER_CTRL, I2C_MST_EN);
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     // Initialize magnetometer
@@ -192,13 +193,13 @@ void ICM20948::calibrateAccel() {
     maxVals.z = std::max(maxVals.z, samples.z);
   }
 
-  calibration_.accelBias.x = (minVals.x + maxVals.x) / 2.0;
-  calibration_.accelBias.y = (minVals.y + maxVals.y) / 2.0;
-  calibration_.accelBias.z = (minVals.z + maxVals.z) / 2.0;
+  calibration_.accelBias.x = (minVals.x + maxVals.x);
+  calibration_.accelBias.y = (minVals.y + maxVals.y);
+  calibration_.accelBias.z = (minVals.z + maxVals.z);
 
-  calibration_.accelScale.x = 2.0 / (maxVals.x - minVals.x);
-  calibration_.accelScale.y = 2.0 / (maxVals.y - minVals.y);
-  calibration_.accelScale.z = 2.0 / (maxVals.z - minVals.z);
+  calibration_.accelScale.x = (maxVals.x - minVals.x);
+  calibration_.accelScale.y = (maxVals.y - minVals.y);
+  calibration_.accelScale.z = (maxVals.z - minVals.z);
 
   std::cout << "Accelerometer calibration complete." << std::endl;
 }
@@ -315,11 +316,11 @@ void ICM20948::initializeMagnetometer() {
       std::this_thread::sleep_for(std::chrono::milliseconds(INIT_DELAY));
 
       // First disable I2C master mode
-      writeRegister(0, USER_CTRL, readRegister(0, USER_CTRL) & ~0x20);
+      writeRegister(0, USER_CTRL, readRegister(0, USER_CTRL) & ~I2C_MST_EN);
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
       // Reset I2C master module
-      writeRegister(0, USER_CTRL, readRegister(0, USER_CTRL) | 0x02);
+      writeRegister(0, USER_CTRL, readRegister(0, USER_CTRL) | I2C_MST_RST);
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
       // Configure I2C master clock frequency and settings
@@ -328,7 +329,7 @@ void ICM20948::initializeMagnetometer() {
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
       // Enable I2C master mode
-      writeRegister(0, USER_CTRL, readRegister(0, USER_CTRL) | 0x20);
+      writeRegister(0, USER_CTRL, readRegister(0, USER_CTRL) | I2C_MST_EN);
       std::this_thread::sleep_for(
           std::chrono::milliseconds(100)); // Longer delay after enabling
 
@@ -355,7 +356,7 @@ void ICM20948::initializeMagnetometer() {
       std::this_thread::sleep_for(
           std::chrono::milliseconds(200)); // Increased delay
 
-      uint8_t mag_id = readRegister(0, EXT_SENS_DATA_00);
+      uint8_t mag_id = readRegister(0, EXT_SLV_SENS_DATA_00);
       std::cout << "Magnetometer ID read: 0x" << std::hex
                 << static_cast<int>(mag_id) << std::dec << std::endl;
 
@@ -418,7 +419,7 @@ IMUSensorData ICM20948::readSensorData() {
                 readRegister(0, GYRO_ZOUT_L);
 
   // Read magnetometer status and data from external sensor data registers
-  uint8_t mag_status1 = readRegister(0, EXT_SENS_DATA_00);
+  uint8_t mag_status1 = readRegister(0, EXT_SLV_SENS_DATA_00);
 
   // Check if new data is ready
   if (!(mag_status1 & 0x01)) {
@@ -429,15 +430,18 @@ IMUSensorData ICM20948::readSensorData() {
   }
 
   // Read magnetometer data (data registers follow status register)
-  data.mag.x = (static_cast<int16_t>(readRegister(0, EXT_SENS_DATA_02)) << 8) |
-               readRegister(0, EXT_SENS_DATA_01);
-  data.mag.y = (static_cast<int16_t>(readRegister(0, EXT_SENS_DATA_04)) << 8) |
-               readRegister(0, EXT_SENS_DATA_03);
-  data.mag.z = (static_cast<int16_t>(readRegister(0, EXT_SENS_DATA_06)) << 8) |
-               readRegister(0, EXT_SENS_DATA_05);
+  data.mag.x =
+      (static_cast<int16_t>(readRegister(0, EXT_SLV_SENS_DATA_02)) << 8) |
+      readRegister(0, EXT_SLV_SENS_DATA_01);
+  data.mag.y =
+      (static_cast<int16_t>(readRegister(0, EXT_SLV_SENS_DATA_04)) << 8) |
+      readRegister(0, EXT_SLV_SENS_DATA_03);
+  data.mag.z =
+      (static_cast<int16_t>(readRegister(0, EXT_SLV_SENS_DATA_06)) << 8) |
+      readRegister(0, EXT_SLV_SENS_DATA_05);
 
   // Check overflow flag in status 2 register (follows the 6 data bytes)
-  uint8_t mag_status2 = readRegister(0, EXT_SENS_DATA_07);
+  uint8_t mag_status2 = readRegister(0, EXT_SLV_SENS_DATA_07);
   if (mag_status2 & 0x08) {
     // Log overflow but don't throw - just mark the data as invalid by zeroing
     // it
@@ -455,10 +459,9 @@ void ICM20948::printSensorData() {
     IMUSensorData data = readSensorData();
 
     // Print values with proper units
-    std::cout << "Accelerometer (m/s2):" << " X: "
-              << convertAcceleration(data.accel.x)
-              << " Y: " << convertAcceleration(data.accel.y)
-              << " Z: " << convertAcceleration(data.accel.z) << "\n";
+    Vector3 accel = convertAcceleration(data.accel);
+    std::cout << "Accelerometer (m/s2):" << " X: " << accel.x
+              << " Y: " << accel.y << " Z: " << accel.z << "\n";
 
     std::cout << "Gyroscope (deg/s):" << " X: " << convertGyro(data.gyro.x)
               << " Y: " << convertGyro(data.gyro.y)
@@ -479,20 +482,34 @@ void ICM20948::printSensorData() {
   }
 }
 
-float ICM20948::convertAcceleration(int16_t rawValue) {
-  if (!calibration_.isCalibrated) {
-    return rawValue * ACCEL_SCALE;
+Vector3 ICM20948::convertAcceleration(const AccelData &rawValue) {
+  Vector3 result;
+
+  // Convert raw values to g's first
+  float x = rawValue.x / ACCEL_SCALE.at(0);
+  float y = rawValue.y / ACCEL_SCALE.at(0);
+  float z = rawValue.z / ACCEL_SCALE.at(0);
+
+  if (calibration_.isCalibrated) {
+    // Apply calibration and axis inversion
+    x = (x - calibration_.accelBias.x) * calibration_.accelScale.x;
+    y = (y - calibration_.accelBias.y) * calibration_.accelScale.y;
+    z = (z - calibration_.accelBias.z) * calibration_.accelScale.z;
   }
-  float value = rawValue * ACCEL_SCALE;
-  value = (value - calibration_.accelBias.x) * calibration_.accelScale.x;
-  return value;
+
+  // Convert from g's to m/s2
+  result.x = x * GRAVITY;
+  result.y = y * GRAVITY;
+  result.z = z * GRAVITY;
+
+  return result;
 }
 
 float ICM20948::convertGyro(int16_t rawValue) {
   if (!calibration_.isCalibrated) {
-    return rawValue * GYRO_SCALE;
+    return rawValue / GYRO_SCALE;
   }
-  float value = rawValue * GYRO_SCALE;
+  float value = rawValue / GYRO_SCALE;
   value -= calibration_.gyroBias.x;
   return value;
 }

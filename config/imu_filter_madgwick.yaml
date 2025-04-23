@@ -1,12 +1,23 @@
-madgwick:
+# Configuration for IMU filter using Madgwick algorithm
+imu_filter_madgwick:
   ros__parameters:
-    use_mag: true               # Use magnetometer for heading estimation
-    stateless: false            # Use stateful filter
+    # Filter settings
+    use_mag: false
+    stateless: false
+    zeta: 0.01  # Increased to reduce gyro drift
+    beta: 0.3   # Increased to trust gyro more for rotational movements
+    
+    # Frame settings
+    # Changed from 'enu' to 'odom' to align with EKF and SLAM world frames
+    world_frame: odom
+    fixed_frame: imu_link
+    
+    # Noise parameters
+    orientation_stddev: 0.03      # Reduced to increase confidence in orientation
+    angular_velocity_stddev: 0.01  # Reduced to increase confidence in angular velocity
+    linear_acceleration_stddev: 0.1
+    
+    # Publishing settings
+    publish_tf: true
     reverse_tf: false
-    publish_debug_topics: true  # Publish debug information
-    publish_tf: false           # Disable publishing TF (handled by robot_localization)
-    world_frame: "enu"          # East-North-Up frame for orientation
-    gain: 0.3                   # Increased for faster response to hand movements
-    zeta: 0.1                   # Added damping to reduce oscillations
-    orientation_stddev: 0.01    # Standard deviation for orientation estimate
-    fixed_frame: "base_link"    # Fixed frame for orientation
+    publish_rate: 50.0  # Increased to handle higher velocity movements

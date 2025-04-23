@@ -1,5 +1,7 @@
 /**
- * @brief Implementation of Sense Hat B ICM20948 for OrangePi 5
+ * @brief Implementation of Sense Hat B ICM20948 for OrangePi 5.
+ *        Specs:
+ * https://invensense.tdk.com/wp-content/uploads/2016/06/DS-000189-ICM-20948-v1.3.pdf
  * @author Yongkie Wiyogo
  */
 
@@ -9,10 +11,19 @@
 #include <cstdint>
 #include <stdexcept>
 #include <tuple>
+#include <unordered_map>
 
 // ICM20948 Constants
 static constexpr uint8_t ICM_ADDRESS = 0x68;  // I2C address
 static constexpr uint8_t REG_BANK_SEL = 0x7F; // Bank selection register
+
+static constexpr uint8_t GYRO_FS_SEL_0 = 0; // ±250 dps
+static constexpr uint8_t GYRO_FS_SEL_1 = 1; // ±500 dps
+static constexpr uint8_t GYRO_FS_SEL_2 = 2; // ±1000 dps
+static constexpr uint8_t GYRO_FS_SEL_3 = 3; // ±2000 dps
+
+static constexpr uint8_t I2C_MST_RST = 0x02; // Reset i2c master mode (bit 2)
+static constexpr uint8_t I2C_MST_EN = 0x20;  // Enabling i2c master mode (bit 5)
 
 // Bank 0 Registers (Power Management, Interrupt Configuration)
 static constexpr uint8_t WHO_AM_I = 0x00;     // Device ID register
@@ -41,25 +52,22 @@ static constexpr uint8_t GYRO_ZOUT_H = 0x37;  // Gyroscope Z-axis high byte
 static constexpr uint8_t GYRO_ZOUT_L = 0x38;  // Gyroscope Z-axis low byte
 
 // Bank 0 External Sensor Data Registers
-static constexpr uint8_t EXT_SENS_DATA_00 = 0x3B; // External sensor data 00
-static constexpr uint8_t EXT_SENS_DATA_01 = 0x3C; // External sensor data 01
-static constexpr uint8_t EXT_SENS_DATA_02 = 0x3D; // External sensor data 02
-static constexpr uint8_t EXT_SENS_DATA_03 = 0x3E; // External sensor data 03
-static constexpr uint8_t EXT_SENS_DATA_04 = 0x3F; // External sensor data 04
-static constexpr uint8_t EXT_SENS_DATA_05 = 0x40; // External sensor data 05
-static constexpr uint8_t EXT_SENS_DATA_06 = 0x41; // External sensor data 06
-static constexpr uint8_t EXT_SENS_DATA_07 = 0x42; // External sensor data 07
+static constexpr uint8_t EXT_SLV_SENS_DATA_00 = 0x3B; // External sensor data 00
+static constexpr uint8_t EXT_SLV_SENS_DATA_01 = 0x3C; // External sensor data 01
+static constexpr uint8_t EXT_SLV_SENS_DATA_02 = 0x3D; // External sensor data 02
+static constexpr uint8_t EXT_SLV_SENS_DATA_03 = 0x3E; // External sensor data 03
+static constexpr uint8_t EXT_SLV_SENS_DATA_04 = 0x3F; // External sensor data 04
+static constexpr uint8_t EXT_SLV_SENS_DATA_05 = 0x40; // External sensor data 05
+static constexpr uint8_t EXT_SLV_SENS_DATA_06 = 0x41; // External sensor data 06
+static constexpr uint8_t EXT_SLV_SENS_DATA_07 = 0x42; // External sensor data 07
 
 // Bank 2 Registers (Sensor Configuration)
-static constexpr uint8_t GYRO_SMPLRT_DIV =
-    0x00;                                      // Gyroscope sample rate divider
-static constexpr uint8_t GYRO_CONFIG_1 = 0x01; // Gyroscope configuration 1
-static constexpr uint8_t ACCEL_SMPLRT_DIV_1 =
-    0x10; // Accelerometer sample rate divider 1
-static constexpr uint8_t ACCEL_SMPLRT_DIV_2 =
-    0x11; // Accelerometer sample rate divider 2
-static constexpr uint8_t ACCEL_CONFIG = 0x14;   // Accelerometer configuration
-static constexpr uint8_t ACCEL_CONFIG_2 = 0x15; // Accelerometer configuration 2
+static constexpr uint8_t GYRO_SMPLRT_DIV = 0x00;    // Gyros sample rate divider
+static constexpr uint8_t GYRO_CONFIG_1 = 0x01;      // Gyros configuration 1
+static constexpr uint8_t ACCEL_SMPLRT_DIV_1 = 0x10; // Acc sample rate divider 1
+static constexpr uint8_t ACCEL_SMPLRT_DIV_2 = 0x11; // Acc sample rate divider 2
+static constexpr uint8_t ACCEL_CONFIG = 0x14;       // Acc configuration
+static constexpr uint8_t ACCEL_CONFIG_2 = 0x15;     // Acc configuration 2
 
 // Bank 3 I2C Master Registers
 static constexpr uint8_t I2C_MST_CTRL = 0x01;       // I2C master control
@@ -139,14 +147,18 @@ private:
   uint8_t current_bank = 0;
 
   // Scaling factors for sensor data conversion
-  static constexpr float ACCEL_SCALE = 4.0f * 9.81f / 32768.0f; // ±4g range
-  static constexpr float GYRO_SCALE = 500.0f / 32768.0f; // ±500 dps range
-  static constexpr float MAG_SCALE = 0.15f;              // 0.15 μT/LSB
+  const std::unordered_map<uint8_t, double> ACCEL_SCALE = {
+      {0, 16384.}, // ±2g or 16,384 LSB/g
+      {1, 8192.},  // ±4g
+      {2, 4096.},  // ±8g
+      {3, 2048.}}; // ±16g
+
+  static constexpr float GYRO_SCALE = 131.0f; // ±250 dps range
+  static constexpr float MAG_SCALE = 0.15f;   // 0.15 μT/LSB
 
   // Calibration data
   CalibrationData calibration_;
-  static constexpr int CALIBRATION_SAMPLES =
-      1000; // Number of samples for calibration
+  static constexpr int CALIBRATION_SAMPLES = 1000; // Number of calibration samples
 
   // Print formatting
   int print_header_interval;
@@ -220,7 +232,7 @@ public:
    */
   IMUSensorData readSensorData();
 
-  float convertAcceleration(int16_t rawValue);
+  Vector3 convertAcceleration(const AccelData &rawValue);
   float convertGyro(int16_t rawValue);
   float convertMagneticField(int16_t rawValue);
 

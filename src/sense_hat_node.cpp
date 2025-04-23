@@ -128,12 +128,11 @@ private:
       auto imu_data = sensor_->readSensorData();
 
       // Convert and set linear acceleration (m/s^2)
-      message.linear_acceleration.x =
-          sensor_->convertAcceleration(imu_data.accel.x);
-      message.linear_acceleration.y =
-          sensor_->convertAcceleration(imu_data.accel.y);
-      message.linear_acceleration.z =
-          sensor_->convertAcceleration(imu_data.accel.z);
+      Vector3 accel = sensor_->convertAcceleration(imu_data.accel);
+      // Use standard coordinate system (no inversion)
+      message.linear_acceleration.x = accel.x;
+      message.linear_acceleration.y = accel.y;
+      message.linear_acceleration.z = accel.z;
 
       // Convert and set angular velocity deg/s to rad/s
       message.angular_velocity.x =

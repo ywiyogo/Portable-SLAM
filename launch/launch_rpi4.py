@@ -169,17 +169,18 @@ def generate_launch_description() -> LaunchDescription:
 
     # TF2 static transforms
     imu_base_transform = Node(
-        package="tf2_ros",
-        executable="static_transform_publisher",
-        name="imu_broadcaster",
-        arguments=["0", "0", "0", "0", "0", "0", "base_link", "imu_link"],
+        package="portable_slam",
+        executable="static_transform_node",
+        name="static_transform_node_imu",
+        parameters=[{'parent_frame': 'base_link', 'child_frame': 'imu_link'}]
     )
     # The Lidar is 4 cm higher from the base board
     lidar_base_transform = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
         name="laser_broadcaster",
-        arguments=["0", "0", "0.4", "0", "0", "0", "base_link", "laser_frame"],
+        arguments=["0", "0", "0.4", "-1.5708", "0", "0", "base_link", "laser_frame"],
+        # -1.5708 radians = -90 degrees rotation around X axis (clockwise)
     )
     # Alternative method to estimate odometry from lidar scan.
     # However, rf2o doesn'T support IMU integration

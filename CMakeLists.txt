@@ -12,10 +12,12 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(tf2_ros REQUIRED)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_executable(sense_hat_node src/sense_hat_node.cpp src/icm20948.cpp)
+add_executable(static_transform_node src/static_transform_node.cpp)
 target_include_directories(sense_hat_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
@@ -30,6 +32,10 @@ ament_target_dependencies(sense_hat_node
     "sensor_msgs"
     "std_srvs"
 )
+ament_target_dependencies(static_transform_node
+    "rclcpp"
+    "tf2_ros"
+)
 # Copy the launch files to the install folder
 install(
   DIRECTORY launch
@@ -42,7 +48,7 @@ install(
   DESTINATION share/${PROJECT_NAME}/config
   )
 
-install(TARGETS sense_hat_node
+install(TARGETS sense_hat_node static_transform_node
   DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)

@@ -19,14 +19,14 @@ slam_toolbox:
     use_pose_extrapolation: true # Important for smooth motion
 
     debug_logging: true
-    throttle_scans: 1
-    transform_publish_period: 0.05 #if 0 never publishes TF. 0.05s = 20Hz
+    throttle_scans: 2 # Process every 2nd scan to reduce load
+    transform_publish_period: 0.02 # Increased frequency to 50Hz for faster TF updates
     map_update_interval: 2.0
     resolution: 0.05
     min_laser_range: 2.0
     max_laser_range: 12.0
-    # controls how frequently slam_toolbox will process new laser scans
-    minimum_time_interval: 0.2
+    # Increased to reduce processing load and allow more time for IMU data to stabilize
+    minimum_time_interval: 0.2  # Further reduced interval for higher velocity movements
     # how long slam_toolbox will wait for a transform to become available
     transform_timeout: 0.3 # Give more time to transform due to low compute performace
     tf_buffer_duration: 60.0
@@ -38,7 +38,7 @@ slam_toolbox:
     use_scan_barycenter: true
     minimum_travel_distance: 0.1
     minimum_travel_heading: 0.1
-    scan_buffer_size: 30 # Larger buffer for smoother operation
+    scan_buffer_size: 200 # Increased buffer size to prevent message dropping
     scan_buffer_maximum_scan_distance: 12.0
     link_match_minimum_response_fine: 0.1
     link_scan_maximum_distance: 1.5
@@ -72,5 +72,5 @@ slam_toolbox:
 
     # Motion Distortion Parameters
     use_scan_deskewing: true # Important for motion compensation
-    motion_model_max_angle: 0.4 # Increased for quicker hand movements
-    motion_model_min_angle: 0.05 # More sensitive to small rotations
+    motion_model_max_angle: 0.8 # Further increased for higher velocity rotations
+    motion_model_min_angle: 0.03 # More sensitive to smaller rotations
