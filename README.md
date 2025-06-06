@@ -2,6 +2,8 @@
 
 A ROS2 Jazzy package for SLAM using the IMU of Waveshare Sense Hat B and YDLidar.
 
+![portable SLAM prototype](./docs/prototype1.jpeg)
+
 ## Requirements
 
 ### Hardware
