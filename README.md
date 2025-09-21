@@ -70,7 +70,77 @@ sudo usermod -aG dialout $USER
 - Clone this repository inside the src folder.
 - Build the package: `colcon build --symlink-install`.
 - If the build is successful, source the local setup `source ./install/setup.bash`.
-- Run the launch script `ros2 launch portable_slam launch_opi5.py` for Orange Pi 5 or `ros2 launch portable_slam launch_opi5.py` for Raspberry Pi 4B.
+- Run the test script to validate setup: `./scripts/test_slam_setup.sh`
+- Run the launch script `ros2 launch portable_slam launch_opi5.py` for Orange Pi 5 or `ros2 launch portable_slam launch_rpi4.py` for Raspberry Pi 4B.
+
+## Development Workflow
+
+### Local Development with Remote Testing
+
+This project supports a hybrid development workflow that allows editing code locally in your IDE while testing builds on the target Raspberry Pi hardware. This eliminates the need for constant remote access during development.
+
+#### Prerequisites
+- SSH key-based authentication set up between your local machine and Raspberry Pi
+- Rsync installed on your local machine
+- Raspberry Pi accessible via hostname/IP
+- Docker installed on host (for visualization, optional)
+
+#### Visualization with Docker (Optional)
+To visualize SLAM mapping without installing ROS2 on your host, use Docker:
+
+1. **Build the ROS2 Jazzy desktop container:**
+   ```bash
+   git clone https://github.com/ywiyogo/Docker-Scripts.git
+   cd Docker-Scripts
+   docker build -f ros2_jazzy_desktop_dev.dockerfile -t ros2_jazzy_desktop .
+   ```
+
+2. **Run the container with network access:**
+   ```bash
+   docker run -it --rm \
+     --network host \
+     -e DISPLAY=$DISPLAY \
+     -v /tmp/.X11-unix:/tmp/.X11-unix \
+     -v $(pwd)/config/portable_slam.rviz:/root/portable_slam.rviz \
+     ros2_jazzy_desktop
+   ```
+
+3. **Inside the container, connect to your target:**
+   ```bash
+   export ROS_DOMAIN_ID=42  # Same ID as your target
+   rviz2 -d /root/portable_slam.rviz
+   ```
+
+4. **On your target device, launch SLAM with the same ROS_DOMAIN_ID:**
+   ```bash
+   export ROS_DOMAIN_ID=42
+   ros2 launch portable_slam launch_rpi4.py
+   ```
+
+#### Development Phase: Testing Uncommitted Changes
+1. Edit code locally in your IDE (e.g., VSCode)
+2. Set the target environment variable:
+   ```bash
+   export TARGET="user@host"  # e.g., "pi@raspberrypi.local" or "user@192.168.1.100"
+   ```
+   Or run in one line: `TARGET=pi@raspberrypi.local ./scripts/sync_and_build.sh`
+3. Run `./scripts/sync_and_build.sh` to:
+   - Rsync your local changes to the Pi (excluding .git to avoid conflicts)
+   - Automatically build the package on the Pi with `colcon build --symlink-install`
+4. Test the functionality on the Pi
+5. Iterate: make more local changes, sync, test, repeat
+
+#### Commit Phase: Version Control
+When changes are stable and tested:
+1. Commit locally: `git add . && git commit -m "your message"`
+2. Push to remote: `git push`
+3. Sync Pi to official version: SSH to Pi and run `cd ~/ros2_slam_ws/src/portable_slam && git pull`
+
+#### Benefits
+- **Rapid iteration**: Test changes immediately without committing
+- **Safe commits**: Only push thoroughly tested code
+- **No remote editing**: Full IDE features locally
+- **Git integration**: Maintains version control workflow
 
 ## Implementation
 
@@ -107,3 +177,43 @@ Our integration strategies are:
    * IMU for orientation and motion detection
    * EKF for sensor fusion at reduced rates
    * Proper message handling between components
+
+## Architecture Overview
+
+### Data Flow
+Raw IMU data → Calibration → Madgwick filter (with magnetometer) → Filtered IMU with orientation → EKF (fusing IMU + rf2o odometry) → Odometry estimate → SLAM toolbox for mapping
+
+### Processing Pipeline
+- Lidar (10Hz) → SLAM (10Hz with optimized processing) → IMU (20Hz) → Madgwick (50Hz) → EKF (20Hz)
+- Hardware Integration: Well-structured with proper I2C configuration, transform publishing, and calibration workflow
+
+### Key Components
+- **sense_hat_node**: Publishes raw IMU data at 20Hz with configurable QoS and covariance matrices, includes calibration service
+- **imu_filter_madgwick**: Processes raw IMU data into orientation estimates with magnetometer integration for heading stability
+- **robot_localization EKF**: Fuses IMU and rf2o odometry data for robust pose estimation at 20Hz
+- **rf2o_laser_odometry**: Provides additional odometry from lidar scan matching for enhanced sensor fusion
+- **slam_toolbox**: Performs lidar-based mapping with motion compensation using EKF odometry and optimized processing rates
+- **ydlidar_ros2_driver**: Provides laser scan data from YDLidar Tmini Pro
+
+### Transform Hierarchy
+```
+map
+└── odom
+    └── base_link
+        ├── imu_link
+        └── laser_frame
+```
+
+### Sensor Fusion Strategy
+- IMU provides orientation and motion detection through Madgwick filtering with magnetometer stabilization
+- rf2o provides odometry from lidar scan matching for short-term accuracy
+- EKF fuses IMU and rf2o odometry for robust long-term pose estimation
+- SLAM toolbox uses fused odometry for scan deskewing and pose extrapolation
+- Lidar scan matching provides the primary mapping capability with enhanced stability
+
+### Performance Characteristics
+- Processing frequencies optimized for Raspberry Pi 4B with improved responsiveness
+- Conservative noise models based on ICM20948 datasheet specifications
+- Automatic IMU calibration workflow in launch sequence
+- Enhanced sensor fusion with rf2o odometry for better drift reduction
+- Motion compensation ensures scan quality during movement with magnetometer heading stabilization
