@@ -155,17 +155,40 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[ekf_config],
     )
     # TF2 static transforms
+    # CRITICAL FIX: Changed from [pi, pi, pi] to [0, 0, 0] to match RPi4 launch file
+    # The IMU should be aligned with base_link without rotation
+    # If your physical IMU is rotated, adjust these values accordingly
     imu_base_transform = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
         name="imu_broadcaster",
-        arguments=["0", "0", "0", str(pi), str(pi), str(pi), "base_link", "imu_link"],
+        arguments=["0", "0", "0", "0", "0", "0", "base_link", "imu_link"],
     )
     lidar_base_transform = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
         name="laser_broadcaster",
         arguments=["0", "0", "0", "0", "0", "0", "base_link", "laser_frame"],
+    )
+
+    # CRITICAL FIX: Added rf2o laser odometry node (was missing in Orange Pi 5 launch file)
+    # This provides scan-matching odometry essential for handheld SLAM
+    # Without this, the EKF only has IMU data, leading to significant drift
+    rf2o_node = Node(
+        package="rf2o_laser_odometry",
+        executable="rf2o_laser_odometry_node",
+        name="rf2o_laser_odometry",
+        parameters=[
+            {
+                "laser_scan_topic": "/scan",
+                "odom_topic": "/odom_rf2o",
+                "publish_tf": False,  # Disable TF publishing to avoid conflicts with EKF
+                "base_frame_id": "base_link",
+                "odom_frame_id": "odom",
+                "init_pose_from_topic": "",
+                "freq": 10.0,
+            }
+        ],
     )
 
     # robot_localization uses the IMU data to estimate the robot's pose
@@ -180,6 +203,7 @@ def generate_launch_description() -> LaunchDescription:
 
     ld.add_action(ydlidar_node)
     ld.add_action(imu_sense_hat2_node)
+    ld.add_action(rf2o_node)  # CRITICAL FIX: Add rf2o odometry for sensor fusion
     ld.add_action(start_localization_1s_delay_node)
     ld.add_action(imu_base_transform)
     ld.add_action(lidar_base_transform)

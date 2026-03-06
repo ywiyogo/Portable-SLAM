@@ -19,16 +19,21 @@ slam_toolbox:
     use_pose_extrapolation: true # Important for smooth motion
 
     debug_logging: true
-    throttle_scans: 2 # Process every 2nd scan to reduce load
+    throttle_scans: 1 # Process every scan for better responsiveness
     transform_publish_period: 0.02 # Increased frequency to 50Hz for faster TF updates
     map_update_interval: 2.0
     resolution: 0.05
-    min_laser_range: 2.0
+    # CRITICAL FIX: Reduced from 2.0m to 0.5m to capture nearby obstacles
+    # YDlidar Tmini Pro supports down to 0.1m range
+    # 0.5m allows mapping within arm's reach during walking
+    min_laser_range: 0.5
     max_laser_range: 12.0
-    # Increased to reduce processing load and allow more time for IMU data to stabilize
-    minimum_time_interval: 0.2  # Further reduced interval for higher velocity movements
-    # how long slam_toolbox will wait for a transform to become available
-    transform_timeout: 0.3 # Give more time to transform due to low compute performace
+    # Optimized for better mapping performance while maintaining stability
+    minimum_time_interval: 0.1  # Reduced for higher velocity movements with improved processing
+    # CRITICAL FIX: Increased from 0.3s to 0.8s to handle transform lookup delays
+    # on low-power SBCs (RPi4, OrangePi5) during intensive processing
+    # Prevents TF lookup failures that cause mapping failures
+    transform_timeout: 0.8
     tf_buffer_duration: 60.0
     stack_size_to_use: 60000000 #// program needs a larger stack size to serialize large maps
     enable_interactive_mode: true
@@ -72,5 +77,8 @@ slam_toolbox:
 
     # Motion Distortion Parameters
     use_scan_deskewing: true # Important for motion compensation
-    motion_model_max_angle: 0.8 # Further increased for higher velocity rotations
+    # CRITICAL FIX: Increased from 0.8 to 1.2 rad (~69 degrees) to accommodate
+    # fast head/body rotations during walking (natural human motion)
+    # Original 0.8 rad (~46 deg) was too restrictive for handheld operation
+    motion_model_max_angle: 1.2
     motion_model_min_angle: 0.03 # More sensitive to smaller rotations

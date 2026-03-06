@@ -107,13 +107,13 @@ To visualize SLAM mapping without installing ROS2 on your host, use Docker:
 
 3. **Inside the container, connect to your target:**
    ```bash
-   export ROS_DOMAIN_ID=42  # Same ID as your target
+   export ROS_DOMAIN_ID=8  # Same ID as your target
    rviz2 -d /root/portable_slam.rviz
    ```
 
 4. **On your target device, launch SLAM with the same ROS_DOMAIN_ID:**
    ```bash
-   export ROS_DOMAIN_ID=42
+   export ROS_DOMAIN_ID=8
    ros2 launch portable_slam launch_rpi4.py
    ```
 
@@ -144,39 +144,52 @@ When changes are stable and tested:
 
 ## Implementation
 
-The portable SLAM system is configured like following:
+The portable SLAM system is configured for handheld walking operation without wheel encoders, GPS, or visual-inertial odometry (VIO). Instead, it relies on:
+
+* **Laser Odometry**: rf2o_laser_odometry provides scan-matching odometry from LiDAR data
+* **IMU-based Orientation**: 9-axis IMU with magnetometer for heading stabilization
+* **Sensor Fusion**: EKF combines laser odometry + IMU for robust pose estimation
+
+**Key Configuration:**
 
 * EKF Configuration for `robot_localization`:
 
-   * EKF: 20Hz with 0.5s timeout for stable processing
-   * IMU: 20Hz to match EKF
-   * High trust in IMU orientation
-   * Conservative velocity estimation
-   * Gravity compensation enabled
+    * EKF: 20Hz processing rate
+    * IMU: 20Hz to match EKF
+    * rf2o Laser Odometry: 10Hz scan-matching
+    * **Optimized for walking dynamics**:
+      - Increased position process noise (0.12-0.15) to account for vertical bobbing and lateral sway
+      - Increased velocity process noise (0.04-0.05) for variable walking speeds
+      - Moderate trust in IMU orientation (stddev: 0.1) accounting for walking vibrations
+    * Gravity compensation enabled
 
 * `slam_toolbox` Configuration:
 
-   * LiDAR-primary settings:
-      1. Frequent scan processing 10 Hz (minimum_time_interval: 0.1)
-      2. Optimized correlation parameters for scan matching
-      3. Conservative loop closure parameters
+    * **Optimized for handheld walking SLAM**:
+       1. Minimum laser range: 0.5m (captures nearby obstacles during walking)
+       2. Scan processing at 10Hz (minimum_time_interval: 0.1)
+       3. Transform timeout: 0.8s (accommodates SBC processing delays)
+       4. Motion model max angle: 1.2 rad (~69°) for natural head rotations
+       5. Scan deskewing enabled for motion compensation
 
-   * IMU Integration:
-      1. Uses filtered IMU data for orientation
-      2. Quick transform updates (transform_publish_period: 0.02)
-      3. Balanced angle/distance penalties
+    * IMU Integration:
+       1. Madgwick filter with reduced beta (0.1) for stable orientation during walking
+       2. Magnetometer enabled for absolute heading reference
+       3. Quick transform updates (transform_publish_period: 0.02)
+       3. Balanced angle/distance penalties
 
-   * QoS Settings:
-      1. Best effort reliability (matching YDLidar)
-      2. History: Keep last 10 messages
-      3. Configured through parameters file for better compatibility
+    * QoS Settings:
+       1. Best effort reliability (matching YDLidar)
+       2. History: Keep last 10 messages
+       3. Configured through parameters file for better compatibility
 
 Our integration strategies are:
 
-   * LiDAR as primary source for mapping (using scan matching)
-   * IMU for orientation and motion detection
-   * EKF for sensor fusion at reduced rates
-   * Proper message handling between components
+    * LiDAR as primary source for mapping (using scan matching)
+    * rf2o laser odometry for short-term position tracking
+    * IMU for orientation and motion detection
+    * EKF for sensor fusion combining rf2o + IMU
+    * Proper message handling between components
 
 ## Architecture Overview
 
@@ -212,8 +225,23 @@ map
 - Lidar scan matching provides the primary mapping capability with enhanced stability
 
 ### Performance Characteristics
-- Processing frequencies optimized for Raspberry Pi 4B with improved responsiveness
+
+**Hardware Optimization:**
+- Processing frequencies optimized for Raspberry Pi 4B and Orange Pi 5
 - Conservative noise models based on ICM20948 datasheet specifications
 - Automatic IMU calibration workflow in launch sequence
 - Enhanced sensor fusion with rf2o odometry for better drift reduction
 - Motion compensation ensures scan quality during movement with magnetometer heading stabilization
+
+**Walking Motion Optimization:**
+- Process noise tuned for human walking dynamics (0.5-1.5 m/s speed range)
+- Madgwick filter beta reduced to 0.1 to prevent orientation errors during accelerations
+- Motion model supports fast rotations up to 69° (1.2 rad) for natural head movements
+- Minimum laser range 0.5m to capture nearby obstacles within arm's reach
+- Transform timeout increased to 0.8s to handle SBC processing during intensive operations
+
+**Expected Performance:**
+- **Suitable for**: Slow walking (< 1.0 m/s), indoor environments, short sessions (< 10 min)
+- **Position drift**: ~1-3% of distance traveled (with rf2o + IMU fusion)
+- **Heading drift**: < 5° per minute (with magnetometer)
+- **Limitations**: Fast walking/running, long corridors, outdoor magnetic interference

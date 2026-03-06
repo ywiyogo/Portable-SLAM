@@ -2,10 +2,14 @@
 imu_filter_madgwick:
   ros__parameters:
     # Filter settings
-    use_mag: false
+    use_mag: true  # Enable magnetometer for heading stability
     stateless: false
-    zeta: 0.01  # Increased to reduce gyro drift
-    beta: 0.3   # Increased to trust gyro more for rotational movements
+    zeta: 0.01  # Gyroscope drift compensation (increased to reduce drift)
+    # CRITICAL FIX: Reduced from 0.3 to 0.1 to avoid overshooting during fast movements
+    # High beta (0.3) causes filter to over-trust accelerometer, leading to tilt errors
+    # during walking accelerations (foot impacts, body sway)
+    # Lower beta (0.1) provides better balance between responsiveness and stability
+    beta: 0.1
     
     # Frame settings
     # Changed from 'enu' to 'odom' to align with EKF and SLAM world frames
@@ -13,8 +17,11 @@ imu_filter_madgwick:
     fixed_frame: imu_link
     
     # Noise parameters
-    orientation_stddev: 0.03      # Reduced to increase confidence in orientation
-    angular_velocity_stddev: 0.01  # Reduced to increase confidence in angular velocity
+    # CRITICAL FIX: Increased from 0.03 to 0.1 to account for walking vibrations
+    # Handheld devices experience higher noise during walking (foot impacts, body motion)
+    # Original 0.03 was too optimistic and caused EKF to over-trust IMU orientation
+    orientation_stddev: 0.1
+    angular_velocity_stddev: 0.01  # Gyro is more stable than orientation estimate
     linear_acceleration_stddev: 0.1
     
     # Publishing settings

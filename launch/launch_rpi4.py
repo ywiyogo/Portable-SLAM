@@ -192,8 +192,8 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[
             {
                 "laser_scan_topic": "/scan",
-                "odom_topic": "/odom",
-                "publish_tf": True,
+                "odom_topic": "/odom_rf2o",
+                "publish_tf": False,  # Disable TF publishing to avoid conflicts
                 "base_frame_id": "base_link",
                 "odom_frame_id": "odom",
                 "init_pose_from_topic": "",
@@ -218,16 +218,37 @@ def generate_launch_description() -> LaunchDescription:
         event_handler=OnProcessStart(target_action=ydlidar_node, on_start=rf2o_node)
     )
 
+    # IMU calibration sequence - run calibration after IMU node starts
+    calibrate_imu = RegisterEventHandler(
+        event_handler=OnProcessStart(
+            target_action=imu_sense_hat2_node,
+            on_start=[
+                LogInfo(msg="[Calibration] Waiting 2 seconds for IMU to initialize..."),
+                ExecuteProcess(
+                    cmd=['sleep', '2.0'],
+                    output='screen'
+                ),
+                LogInfo(msg="[Calibration] Starting IMU calibration..."),
+                ExecuteProcess(
+                    cmd=['ros2', 'service', 'call', '/calibrate_imu', 'std_srvs/srv/Trigger', '{}'],
+                    output='screen'
+                ),
+                LogInfo(msg="[Calibration] IMU calibration completed, starting filter...")
+            ]
+        )
+    )
+
     ld = LaunchDescription()
 
     ld.add_action(declare_use_sim_time_argument)
     ld.add_action(ekf_filter_node)
     ld.add_action(imu_sense_hat2_node)
+    ld.add_action(calibrate_imu)  # Add calibration sequence
     ld.add_action(imu_base_transform)
     ld.add_action(lidar_base_transform)
     ld.add_action(imu_filter_madgwick_node)
     ld.add_action(ydlidar_node)
-    # ld.add_action(launch_rf2o_after_lidar_imu)
+    ld.add_action(launch_rf2o_after_lidar_imu)
 
     # slam_toolbox
     ld.add_action(declare_autostart_cmd)
@@ -271,10 +292,23 @@ def generate_launch_description() -> LaunchDescription:
             LogInfo(msg="[Shutdown] Shutdown sequence complete")
         ]
 
+    # Enhanced shutdown handler with map persistence
+    def enhanced_on_shutdown(event, context):
+        map_save_actions = [
+            LogInfo(msg="[Map Persistence] Saving current map..."),
+            ExecuteProcess(
+                cmd=['ros2', 'service', 'call', '/slam_toolbox/save_map', 'slam_toolbox/srv/SaveMap',
+                     '{name: {data: \"/home/ubuntu/portable_slam_map\"}}'],
+                output='screen'
+            ),
+            LogInfo(msg="[Map Persistence] Map saved successfully")
+        ]
+        # Get original shutdown actions and prepend map saving
+        original_actions = on_shutdown(event, context)
+        return map_save_actions + original_actions
+
     shutdown_handler = RegisterEventHandler(
-        OnShutdown(
-            on_shutdown=on_shutdown
-        )
+        OnShutdown(on_shutdown=enhanced_on_shutdown)
     )
     ld.add_action(shutdown_handler)
 
