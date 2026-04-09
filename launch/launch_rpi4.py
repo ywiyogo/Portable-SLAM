@@ -40,6 +40,7 @@ def generate_launch_description() -> LaunchDescription:
     package_dir = get_package_share_directory("portable_slam")
     ekf_config = os.path.join(package_dir, "config", "imu_odom_config.yaml")
     madgwick_config = os.path.join(package_dir, "config", "imu_filter_madgwick.yaml")
+    lps22hb_config = os.path.join(package_dir, "config", "lps22hb_config.yaml")
 
     # Launch argument declarations
     declare_use_sim_time_argument = DeclareLaunchArgument(
@@ -82,6 +83,20 @@ def generate_launch_description() -> LaunchDescription:
             madgwick_config,
         ],
         output="screen",
+    )
+
+    lps22hb_node = Node(
+        package="portable_slam",
+        executable="lps22hb_node",
+        name="lps22hb_node",
+        output="screen",
+        parameters=[
+            lps22hb_config,
+            {
+                "i2c_bus": 1,
+                "use_sim_time": use_sim_time,
+            },
+        ],
     )
 
     # slam_toolbox Lifescycle Node declarations and its event triggers
@@ -173,7 +188,7 @@ def generate_launch_description() -> LaunchDescription:
         package="portable_slam",
         executable="static_transform_node",
         name="static_transform_node_imu",
-        parameters=[{'parent_frame': 'base_link', 'child_frame': 'imu_link'}]
+        parameters=[{"parent_frame": "base_link", "child_frame": "imu_link"}],
     )
     # The Lidar is 4 cm higher from the base board
     lidar_base_transform = Node(
@@ -224,17 +239,23 @@ def generate_launch_description() -> LaunchDescription:
             target_action=imu_sense_hat2_node,
             on_start=[
                 LogInfo(msg="[Calibration] Waiting 2 seconds for IMU to initialize..."),
-                ExecuteProcess(
-                    cmd=['sleep', '2.0'],
-                    output='screen'
-                ),
+                ExecuteProcess(cmd=["sleep", "2.0"], output="screen"),
                 LogInfo(msg="[Calibration] Starting IMU calibration..."),
                 ExecuteProcess(
-                    cmd=['ros2', 'service', 'call', '/calibrate_imu', 'std_srvs/srv/Trigger', '{}'],
-                    output='screen'
+                    cmd=[
+                        "ros2",
+                        "service",
+                        "call",
+                        "/calibrate_imu",
+                        "std_srvs/srv/Trigger",
+                        "{}",
+                    ],
+                    output="screen",
                 ),
-                LogInfo(msg="[Calibration] IMU calibration completed, starting filter...")
-            ]
+                LogInfo(
+                    msg="[Calibration] IMU calibration completed, starting filter..."
+                ),
+            ],
         )
     )
 
@@ -247,6 +268,7 @@ def generate_launch_description() -> LaunchDescription:
     ld.add_action(imu_base_transform)
     ld.add_action(lidar_base_transform)
     ld.add_action(imu_filter_madgwick_node)
+    ld.add_action(lps22hb_node)
     ld.add_action(ydlidar_node)
     ld.add_action(launch_rf2o_after_lidar_imu)
 
@@ -262,34 +284,54 @@ def generate_launch_description() -> LaunchDescription:
             LogInfo(msg="[Shutdown] Initiating graceful shutdown sequence..."),
             # First stop regular nodes and services
             ExecuteProcess(
-                cmd=['ros2', 'service', 'call', '/ydlidar_ros2_driver_node/stop_scan', 'std_srvs/srv/Empty', '{}'],
-                output='screen'
+                cmd=[
+                    "ros2",
+                    "service",
+                    "call",
+                    "/ydlidar_ros2_driver_node/stop_scan",
+                    "std_srvs/srv/Empty",
+                    "{}",
+                ],
+                output="screen",
             ),
             # Small delay to ensure lidar stops properly
-            ExecuteProcess(
-                cmd=['sleep', '0.5'],
-                output='screen'
-            ),
+            ExecuteProcess(cmd=["sleep", "0.5"], output="screen"),
             # Reset lidar more thoroughly
             ExecuteProcess(
-                cmd=['ros2', 'service', 'call', '/ydlidar_ros2_driver_node/reset', 'std_srvs/srv/Empty', '{}'],
-                output='screen'
+                cmd=[
+                    "ros2",
+                    "service",
+                    "call",
+                    "/ydlidar_ros2_driver_node/reset",
+                    "std_srvs/srv/Empty",
+                    "{}",
+                ],
+                output="screen",
             ),
             ExecuteProcess(
-                cmd=['ros2', 'service', 'call', '/ekf_filter_node/reset', 'std_srvs/srv/Empty', '{}'],
-                output='screen'
+                cmd=[
+                    "ros2",
+                    "service",
+                    "call",
+                    "/ekf_filter_node/reset",
+                    "std_srvs/srv/Empty",
+                    "{}",
+                ],
+                output="screen",
             ),
             # Then handle lifecycle node shutdown
             EmitEvent(
                 event=ChangeState(
-                    lifecycle_node_matcher=matches_action(start_async_slam_toolbox_node),
+                    lifecycle_node_matcher=matches_action(
+                        start_async_slam_toolbox_node
+                    ),
                     transition_id=Transition.TRANSITION_ACTIVE_SHUTDOWN,
                 ),
                 condition=IfCondition(
-                    LaunchConfiguration('use_lifecycle_manager', default='false')
-                )
+                    LaunchConfiguration("use_lifecycle_manager", default="false")
+                ),
             ),
-            LogInfo(msg="[Shutdown] Shutdown sequence complete")
+            LogInfo(msg="[Shutdown] Shutdown sequence complete"),
         ]
 
     # Enhanced shutdown handler with map persistence
@@ -297,11 +339,17 @@ def generate_launch_description() -> LaunchDescription:
         map_save_actions = [
             LogInfo(msg="[Map Persistence] Saving current map..."),
             ExecuteProcess(
-                cmd=['ros2', 'service', 'call', '/slam_toolbox/save_map', 'slam_toolbox/srv/SaveMap',
-                     '{name: {data: \"/home/ubuntu/portable_slam_map\"}}'],
-                output='screen'
+                cmd=[
+                    "ros2",
+                    "service",
+                    "call",
+                    "/slam_toolbox/save_map",
+                    "slam_toolbox/srv/SaveMap",
+                    '{name: {data: "/home/ubuntu/portable_slam_map"}}',
+                ],
+                output="screen",
             ),
-            LogInfo(msg="[Map Persistence] Map saved successfully")
+            LogInfo(msg="[Map Persistence] Map saved successfully"),
         ]
         # Get original shutdown actions and prepend map saving
         original_actions = on_shutdown(event, context)

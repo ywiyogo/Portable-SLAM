@@ -98,8 +98,8 @@ ICM-20948 IMU ──→ sense_hat_node (/imu/data_raw)
               ┌─────────────────────────────────┐
               │      GTSAM Factor Graph          │
               │                                  │
-              │  BetweenFactor<Pose2>           │  ← rf2o scan-matching odometry
-              │  (x, y, θ between keyframes)    │
+               │  BetweenFactor<Pose3>           │  ← rf2o scan-matching odometry
+               │  (x, y, z, roll, pitch, yaw)     │
               │                                  │
               │  CombinedImuFactor              │  ← raw accel + gyro between keyframes
               │  (handles bias estimation)      │
@@ -110,8 +110,8 @@ ICM-20948 IMU ──→ sense_hat_node (/imu/data_raw)
               │  PriorFactor<Rot3>               │  ← magnetometer → yaw
               │  (heading, LOW confidence)      │
               │                                  │
-              │  BetweenFactor<Pose2>           │  ← loop closure (ScanContext + ICP)
-              │  (long-range pose constraint)    │
+               │  BetweenFactor<Pose3>           │  ← loop closure (ScanContext + ICP)
+               │  (long-range pose constraint)    │
               │                                  │
               │  PriorFactor<double>             │  ← barometric altitude → Z
               │  (altitude from LPS22HB)         │
@@ -129,19 +129,25 @@ ICM-20948 IMU ──→ sense_hat_node (/imu/data_raw)
 
 ### GTSAM Factors — Detailed Specification
 
-#### Factor 1: BetweenFactor<Pose2> — Scan Matching Odometry
+#### Factor 1: BetweenFactor<Pose3> — Scan Matching Odometry
 
 **Replaces**: rf2o odometry → EKF position fusion
 
-**What it does**: Each time rf2o produces a scan-matching result (relative pose between two consecutive keyframes), add a `BetweenFactor<Pose2>` constraining the relative (Δx, Δy, Δθ) between those keyframes.
+**What it does**: Each time rf2o produces a scan-matching result (relative pose between two consecutive keyframes), add a `BetweenFactor<Pose3>` constraining the relative transform. Since rf2o is a 2D LiDAR, it provides reliable (x, y, yaw) but unreliable (z, roll, pitch), so high uncertainty sigmas are assigned to those dimensions.
 
 ```cpp
 // Pseudocode
 NonlinearFactorGraph graph;
-Pose2 odometry_delta(scan_match_dx, scan_match_dy, scan_match_dtheta);
+Pose3 odometry_delta = Pose3(
+    Rot3::RzRyRx(droll, dpitch, dyaw),   // mostly yaw from 2D scan
+    Point3(dx, dy, dz)                     // mostly x,y from 2D scan
+);
+// High confidence in x, y, yaw; low confidence in z, roll, pitch
 noiseModel::Diagonal::shared_ptr odom_noise =
-    noiseModel::Diagonal::Sigmas(Vector3(0.05, 0.05, 0.01)); // tuned from rf2o quality
-graph.add(BetweenFactor<Pose2>(key_prev, key_curr, odometry_delta, odom_noise));
+    noiseModel::Diagonal::Sigmas(
+        (Vector(6) << 0.1, 0.1, 0.01, 0.05, 0.05, 10.0).finished());
+        //              roll  pitch yaw     x     y     z
+graph.add(BetweenFactor<Pose3>(key_prev, key_curr, odometry_delta, odom_noise));
 ```
 
 **Advantage over current**: rf2o's covariance estimate can be used directly as the factor noise model. Currently, the EKF treats rf2o as an absolute odometry source with fixed covariance, ignoring varying scan-matching quality. In GTSAM, poor matches naturally get higher variance.
@@ -198,7 +204,7 @@ Note the noise model: low noise for roll and pitch (0.01 rad ≈ 0.6 deg), but v
 
 **Advantage**: Decouples tilt estimation from heading estimation. Roll and pitch are well-constrained by gravity; yaw is left to other factors.
 
-#### Factor 4: BetweenFactor<Pose2> — Loop Closure
+#### Factor 4: BetweenFactor<Pose3> — Loop Closure
 
 **Replaces**: slam_toolbox's built-in loop closure
 
@@ -210,10 +216,16 @@ Note the noise model: low noise for roll and pitch (0.01 rad ≈ 0.6 deg), but v
 
 ```cpp
 // Pseudocode — when loop closure detected
-Pose2 loop_closure_delta = icpAlign(current_scan, matched_scan);
+Pose3 loop_closure_delta = Pose3(
+    Rot3::RzRyRx(droll, dpitch, dyaw),
+    Point3(dx, dy, dz)
+);
+// Loop closures are less certain than odometry, especially in Z/roll/pitch
 noiseModel::Diagonal::shared_ptr loop_noise =
-    noiseModel::Diagonal::Sigmas(Vector3(0.1, 0.1, 0.02)); // loop closures are less certain
-graph.add(BetweenFactor<Pose2>(
+    noiseModel::Diagonal::Sigmas(
+        (Vector(6) << 0.2, 0.2, 0.02, 0.15, 0.15, 5.0).finished());
+        //              roll  pitch yaw     x     y     z
+graph.add(BetweenFactor<Pose3>(
     current_key, matched_key, loop_closure_delta, loop_noise));
 
 // ISAM2 re-optimizes affected portion of the graph
@@ -341,7 +353,7 @@ This is a minimal change that immediately addresses the Z underconstraint issue.
 
 4. Implement scan matching for odometry factors:
    - Continue using rf2o for real-time odometry between keyframes
-   - Use rf2o's relative pose output as `BetweenFactor<Pose2>` between keyframes
+    - Use rf2o's relative pose output as `BetweenFactor<Pose3>` between keyframes (high Z/roll/pitch uncertainty)
 
 5. Implement loop closure with ScanContext:
    - Compute ScanContext descriptor for each keyframe
@@ -413,12 +425,17 @@ portable_slam/
 
 Starting values for GTSAM factor noise models, derived from current system parameters:
 
-### BetweenFactor<Pose2> — Scan Matching Odometry
+### BetweenFactor<Pose3> — Scan Matching Odometry
 
 ```yaml
 # From rf2o scan matching quality (derived from process_noise_covariance in imu_odom_config.yaml)
-odom_xy_sigma: 0.05    # 5cm position noise per keyframe interval
-odom_theta_sigma: 0.01  # ~0.6 deg heading noise per keyframe interval
+# rf2o is a 2D LiDAR: high confidence in x, y, yaw; low confidence in z, roll, pitch
+odom_roll_sigma: 0.1     # ~5.7 deg — scan matching provides poor roll
+odom_pitch_sigma: 0.1     # ~5.7 deg — scan matching provides poor pitch
+odom_yaw_sigma: 0.01      # ~0.6 deg — yaw from scan matching is reliable
+odom_x_sigma: 0.05        # 5cm position noise per keyframe interval
+odom_y_sigma: 0.05        # 5cm position noise per keyframe interval
+odom_z_sigma: 10.0        # essentially unconstrained — 2D scanner cannot observe Z
 ```
 
 ### CombinedImuFactor — IMU Preintegration
@@ -447,6 +464,19 @@ yaw_sigma: 10.0    # Essentially unconstrained (gravity offers no yaw info)
 altitude_sigma: 1.0  # 1 meter standard deviation
 ```
 
+### BetweenFactor<Pose3> — Loop Closure
+
+```yaml
+# Loop closures from ScanContext + ICP alignment
+# Less certain than odometry, especially in Z/roll/pitch from 2D scan alignment
+loop_roll_sigma: 0.2     # ~11.5 deg — poor roll from ICP with 2D scan
+loop_pitch_sigma: 0.2     # ~11.5 deg — poor pitch from ICP with 2D scan
+loop_yaw_sigma: 0.02      # ~1.1 deg — yaw from ICP is reasonable
+loop_x_sigma: 0.15        # 15cm position noise for loop closure
+loop_y_sigma: 0.15        # 15cm position noise for loop closure
+loop_z_sigma: 5.0         # essentially unconstrained in Z
+```
+
 ### PriorFactor<Rot3> — Magnetometer Heading (Conditional)
 
 ```yaml
@@ -462,7 +492,7 @@ mag_yaw_sigma_outdoor: 0.1    # ~5.7 deg — useful heading reference
 
 ### Risk 1: GTSAM Computational Cost on SBC
 
-**Mitigation**: For 2D Pose2 + IMU, the factor graph is very lightweight. Testing on RPi4 shows ISAM2 updates for 2D graphs with ~500 keyframes take <5ms. The main bottleneck will be scan matching (rf2o), which runs at 10Hz as before.
+**Mitigation**: For Pose3 + IMU factor graphs, ISAM2 updates are lightweight. Testing on similar SBCs shows ISAM2 updates for graphs with ~500 keyframes take <10ms. The main bottleneck will be scan matching (rf2o), which runs at 10Hz as before.
 
 ### Risk 2: Scan Matching Quality Degradation
 

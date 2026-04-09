@@ -41,6 +41,7 @@ def generate_launch_description() -> LaunchDescription:
 
     package_dir = get_package_share_directory("portable_slam")
     ekf_config = os.path.join(package_dir, "config", "imu_odom_config.yaml")
+    lps22hb_config = os.path.join(package_dir, "config", "lps22hb_config.yaml")
 
     # Launch argument declarations
     declare_use_sim_time_argument = DeclareLaunchArgument(
@@ -85,6 +86,20 @@ def generate_launch_description() -> LaunchDescription:
             madgwick_config,
         ],
         output="screen",
+    )
+
+    lps22hb_node = Node(
+        package="portable_slam",
+        executable="lps22hb_node",
+        name="lps22hb_node",
+        output="screen",
+        parameters=[
+            lps22hb_config,
+            {
+                "i2c_bus": 5,
+                "use_sim_time": use_sim_time,
+            },
+        ],
     )
 
     # slam_toolbox Lifescycle Node declarations and its event triggers
@@ -245,6 +260,7 @@ def generate_launch_description() -> LaunchDescription:
     ld.add_action(imu_sense_hat2_node)
     ld.add_action(calibrate_imu)
     ld.add_action(imu_filter_madgwick_node)
+    ld.add_action(lps22hb_node)
     ld.add_action(rf2o_node)
     ld.add_action(start_localization_1s_delay_node)
     ld.add_action(imu_base_transform)

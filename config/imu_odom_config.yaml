@@ -20,11 +20,23 @@ ekf_filter_node:
 
     # Odometry input from rf2o laser odometry (lidar-based scan matching)
     # Provides additional odometry source for better sensor fusion
+    # CRITICAL FIX: Z (index 2) and vz (index 8) set to false because rf2o
+    # is a 2D scanner and cannot observe vertical motion. Fusing zero-valued Z
+    # from rf2o incorrectly pulls the Z estimate toward zero (see docs/02_constraint_analysis.md).
     odom0: "/odom_rf2o"
-    odom0_config: [true, true, true, false, false, false, true, true, true, false, false, false, false, false, false]
+    odom0_config: [true, true, false, false, false, false, true, true, false, false, false, false, false, false, false]
     odom0_differential: false
     odom0_relative: false
     odom0_queue_size: 10
+
+    # Barometric altitude input from LPS22HB pressure sensor (Sense HAT B)
+    # Provides an absolute Z reference, converting the Z axis from underconstrained
+    # to constrained (±1m accuracy). See docs/02_constraint_analysis.md Issue 1.
+    odom1: "/altitude"
+    odom1_config: [false, false, true, false, false, false, false, false, false, false, false, false, false, false, false]
+    odom1_differential: false
+    odom1_relative: false
+    odom1_queue_size: 5
     
     # Transform settings
     transform_time_offset: 0.0

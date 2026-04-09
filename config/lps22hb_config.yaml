@@ -1,0 +1,8 @@
+# Configuration for LPS22HB barometric pressure sensor node
+lps22hb_node:
+  ros__parameters:
+    publish_rate: 25.0
+    i2c_bus: 5
+    frame_id: "imu_link"
+    qos_depth: 5
+    sea_level_pressure: 1013.25

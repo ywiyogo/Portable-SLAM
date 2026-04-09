@@ -18,11 +18,16 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_executable(sense_hat_node src/sense_hat_node.cpp src/icm20948.cpp)
 add_executable(static_transform_node src/static_transform_node.cpp)
+add_executable(lps22hb_node src/lps22hb_node.cpp src/lps22hb.cpp)
 target_include_directories(sense_hat_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
+target_include_directories(lps22hb_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
 
-target_compile_features(sense_hat_node PUBLIC c_std_23 cxx_std_20)  
+target_compile_features(sense_hat_node PUBLIC c_std_23 cxx_std_20)
+target_compile_features(lps22hb_node PUBLIC c_std_23 cxx_std_20)
 
 #---------------------------------------------------------------------------------------
 # link libraries
@@ -36,6 +41,11 @@ ament_target_dependencies(static_transform_node
     "rclcpp"
     "tf2_ros"
 )
+ament_target_dependencies(lps22hb_node
+    "rclcpp"
+    "sensor_msgs"
+    "std_msgs"
+)
 # Copy the launch files to the install folder
 install(
   DIRECTORY launch
@@ -48,7 +58,7 @@ install(
   DESTINATION share/${PROJECT_NAME}/config
   )
 
-install(TARGETS sense_hat_node static_transform_node
+install(TARGETS sense_hat_node static_transform_node lps22hb_node
   DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
