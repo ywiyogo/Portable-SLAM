@@ -68,11 +68,23 @@ def generate_launch_description() -> LaunchDescription:
             {
                 "i2c_bus": 5,
                 "use_sim_time": use_sim_time,
-                "publish_rate": 20.0,  # Reduced to match EKF rate
+                "publish_rate": 20.0,
                 "frame_id": "imu_link",
-                "qos_depth": 1,  # Small queue size for real-time data
+                "qos_depth": 1,
             }
         ],
+    )
+
+    madgwick_config = os.path.join(package_dir, "config", "imu_filter_madgwick.yaml")
+    imu_filter_madgwick_node = Node(
+        package="imu_filter_madgwick",
+        executable="imu_filter_madgwick_node",
+        name="imu_filter",
+        namespace="",
+        parameters=[
+            madgwick_config,
+        ],
+        output="screen",
     )
 
     # slam_toolbox Lifescycle Node declarations and its event triggers
@@ -147,12 +159,14 @@ def generate_launch_description() -> LaunchDescription:
         ),
     )
 
-    localization_node = Node(
+    ekf_filter_node = Node(
         package="robot_localization",
         executable="ekf_node",
         name="ekf_filter_node",
         output="screen",
+        emulate_tty=True,
         parameters=[ekf_config],
+        remappings=[("/odometry/filtered", "/odom")],
     )
     # TF2 static transforms
     # CRITICAL FIX: Changed from [pi, pi, pi] to [0, 0, 0] to match RPi4 launch file
@@ -193,8 +207,34 @@ def generate_launch_description() -> LaunchDescription:
 
     # robot_localization uses the IMU data to estimate the robot's pose
     start_localization_1s_delay_node = TimerAction(
-        period=1.0,  # Delay for 1 second
-        actions=[localization_node],
+        period=1.0,
+        actions=[ekf_filter_node],
+    )
+
+    # IMU calibration sequence - run calibration after IMU node starts
+    calibrate_imu = RegisterEventHandler(
+        event_handler=OnProcessStart(
+            target_action=imu_sense_hat2_node,
+            on_start=[
+                LogInfo(msg="[Calibration] Waiting 2 seconds for IMU to initialize..."),
+                ExecuteProcess(cmd=["sleep", "2.0"], output="screen"),
+                LogInfo(msg="[Calibration] Starting IMU calibration..."),
+                ExecuteProcess(
+                    cmd=[
+                        "ros2",
+                        "service",
+                        "call",
+                        "/calibrate_imu",
+                        "std_srvs/srv/Trigger",
+                        "{}",
+                    ],
+                    output="screen",
+                ),
+                LogInfo(
+                    msg="[Calibration] IMU calibration completed, starting filter..."
+                ),
+            ],
+        )
     )
 
     ld = LaunchDescription()
@@ -203,7 +243,9 @@ def generate_launch_description() -> LaunchDescription:
 
     ld.add_action(ydlidar_node)
     ld.add_action(imu_sense_hat2_node)
-    ld.add_action(rf2o_node)  # CRITICAL FIX: Add rf2o odometry for sensor fusion
+    ld.add_action(calibrate_imu)
+    ld.add_action(imu_filter_madgwick_node)
+    ld.add_action(rf2o_node)
     ld.add_action(start_localization_1s_delay_node)
     ld.add_action(imu_base_transform)
     ld.add_action(lidar_base_transform)
