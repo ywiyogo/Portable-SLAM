@@ -42,7 +42,7 @@
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
 
-#include <gtsam/imuBias/ConstantBias.h>
+#include <gtsam/navigation/ImuBias.h>
 
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>

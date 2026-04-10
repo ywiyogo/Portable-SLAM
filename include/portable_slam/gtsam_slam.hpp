@@ -30,7 +30,7 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 
-#include <gtsam/imuBias/ConstantBias.h>
+#include <gtsam/navigation/ImuBias.h>
 
 using gtsam::symbol_shorthand::B;
 using gtsam::symbol_shorthand::V;
