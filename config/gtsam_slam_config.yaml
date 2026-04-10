@@ -1,0 +1,46 @@
+gtsam_slam_node:
+  ros__parameters:
+    # Keyframe selection thresholds
+    keyframe_trans_thresh: 0.3        # meters — minimum translation for new keyframe
+    keyframe_rot_thresh: 0.26         # radians (~15 deg) — minimum rotation for new keyframe
+
+    # IMU preintegration noise (from ICM-20948 datasheet and icm20948.hpp)
+    accel_noise_sigma: 0.4905         # m/s^2 — sqrt(ACCEL_VARIANCE) from icm20948.hpp:195
+    gyro_noise_sigma: 0.01745         # rad/s — sqrt(GYRO_VARIANCE) from icm20948.hpp:204
+    accel_bias_rw_sigma: 0.001        # m/s^2/sqrt(Hz) — slow accelerometer bias drift
+    gyro_bias_rw_sigma: 0.0001        # rad/s/sqrt(Hz) — slow gyroscope bias drift
+    integration_cov_sigma: 1.0e-8     # integration covariance scalar (applied to I_3x3)
+    bias_acc_cov_sigma: 0.001         # accelerometer bias random walk covariance scalar
+    bias_gyro_cov_sigma: 0.0001       # gyroscope bias random walk covariance scalar
+    bias_init_sigma: 1.0e-3           # initial bias uncertainty scalar (applied to 6x6)
+
+    # Gravity vector (ENUp frame: Z up)
+    gravity: [0.0, 0.0, -9.81]
+
+    # BetweenFactor<Pose3> noise — rf2o scan matching odometry
+    # rf2o is 2D LiDAR: high confidence in x, y, yaw; low in z, roll, pitch
+    # Order: [roll, pitch, yaw, x, y, z]
+    odom_noise_sigmas: [0.1, 0.1, 0.01, 0.05, 0.05, 10.0]
+
+    # Barometric altitude (from LPS22HB)
+    altitude_sigma: 1.0               # meters — ±1m altitude accuracy
+
+    # ISAM2 optimizer parameters
+    isam2_relinearize_thresh: 0.1     # relinearization threshold
+    isam2_relinearize_skip: 1.0       # relinearization skip count
+
+    # Prior factors for first keyframe
+    prior_pose_sigma: 0.01            # meters/radians — tight prior on first pose
+    prior_vel_sigma: 0.1              # m/s — prior on first velocity
+    prior_bias_sigma: 1.0e-3          # prior on initial bias
+
+    # Frame IDs
+    odom_frame: "odom"
+    base_frame: "base_link"
+    imu_frame: "imu_link"
+
+    # Topic names
+    imu_topic: "/imu/data_raw"
+    odom_topic: "/odom_rf2o"
+    pressure_topic: "/pressure"
+    output_odom_topic: "/odometry/filtered"

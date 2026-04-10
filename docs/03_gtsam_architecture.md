@@ -326,41 +326,189 @@ odom1_differential: false
 
 This is a minimal change that immediately addresses the Z underconstraint issue.
 
-### Phase 2: Replace EKF + Madgwick with GTSAM IMU Preintegration
+### Phase 1.5: Install GTSAM on SBC
 
-**Goal**: Eliminate cascaded filters and bias handling issues.
+**Goal**: Build GTSAM from source on the target SBC (RPi4 / Orange Pi 5) and make it available for Phase 2.
 
-1. Create a new ROS2 node `gtsam_slam_node` that:
-   - Subscribes to `/imu/data_raw` (raw ICM-20948 data)
-   - Subscribes to `/scan` (LiDAR data)
-   - Subscribes to `/imu/mag` (magnetometer data)
-   - Optionally subscribes to `/pressure` (barometric altitude)
-   - Publishes `/odometry/filtered` and TF transforms
+GTSAM is not available as a ROS2 package and must be built from source. Build time is approximately **2-3 hours on RPi4** and **1-2 hours on Orange Pi 5**.
 
-2. Implement keyframe selection:
-   - Add a new keyframe when the robot moves >0.3m or rotates >15° since the last keyframe
-   - Between keyframes, accumulate IMU measurements via `PreintegratedImuMeasurements`
+#### Prerequisites
 
-3. Implement IMU preintegration:
-   ```cpp
-   auto imu_params = PreintegratedImuMeasurements::Params();
-   imu_params.accelNoiseSigma  = 0.05;   // from ICM-20948 datasheet
-   imu_params.gyroNoiseSigma  = 0.017;   // from ICM-20948 datasheet
-   imu_params.accelBiasSigma  = 0.001;   // slow bias drift
-   imu_params.gyroBiasSigma   = 0.0001;  // slow bias drift
-   imu_params.gravity         = Vector3(0, 0, -9.81);
-   ```
+```bash
+sudo apt update && sudo apt install -y \
+  cmake g++ git libeigen3-dev \
+  libboost-all-dev libtbb-dev \
+  python3-pip python3-dev
+```
 
-4. Implement scan matching for odometry factors:
-   - Continue using rf2o for real-time odometry between keyframes
-    - Use rf2o's relative pose output as `BetweenFactor<Pose3>` between keyframes (high Z/roll/pitch uncertainty)
+#### Clone GTSAM (outside the ROS2 workspace)
 
-5. Implement loop closure with ScanContext:
-   - Compute ScanContext descriptor for each keyframe
-   - Match against past keyframe descriptors
-   - Align matched scans with ICP for precise relative pose
+Clone into `~/gtsam`, **not** inside `~/ros2_ws/src/`. GTSAM is built with plain CMake and `make install`, not as a colcon package.
 
-### Phase 3: Replace slam_toolbox with GTSAM Map Generation
+```bash
+cd ~
+git clone --single-branch --branch develop https://github.com/borglab/gtsam.git
+cd gtsam
+git submodule update --init --recursive
+```
+
+#### Configure and Build
+
+```bash
+mkdir build && cd build
+cmake .. \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX=/usr/local \
+  -DGTSAM_BUILD_EXAMPLES=OFF \
+  -DGTSAM_BUILD_TESTS=OFF \
+  -DGTSAM_BUILD_UNSTABLE=ON \
+  -DGTSAM_WITH_TBB=OFF \
+  -DGTSAM_USE_SYSTEM_EIGEN=ON \
+  -DGTSAM_ENABLE_BOOST_SERIALIZATION=ON \
+  -DGTSAM_THROW_ON_EMPTY_HANDLER=ON \
+  -DCMAKE_CXX_FLAGS="-DEIGEN_DONT_VECTORIZE -Wno-maybe-uninitialized"
+
+# Use -j3 to avoid OOM on 4GB RPi4; use -j4 on 8GB RPi4 or OPI5
+make -j3
+sudo make install
+sudo ldconfig
+```
+
+#### Key CMake Flags Explained
+
+| Flag | Reason |
+|------|--------|
+| `BUILD_EXAMPLES=OFF` | Saves ~30-40% build time, not needed at runtime |
+| `BUILD_TESTS=OFF` | Saves ~30-40% build time, not needed at runtime |
+| `BUILD_UNSTABLE=ON` | **Required** — `CombinedImuFactor` lives in the unstable module |
+| `WITH_TBB=OFF` | TBB can cause issues on ARM64; GTSAM will use OpenMP instead |
+| `USE_SYSTEM_EIGEN=ON` | Uses the system Eigen (installed with ROS2 Jazzy) to avoid ABI conflicts |
+| `THROW_ON_EMPTY_HANDLER=ON` | Safer runtime error handling |
+
+#### Verify Installation
+
+```bash
+# Should print /usr/local
+pkg-config --variable=prefix gtsam
+
+# Should list libgtsam.so
+ldconfig -p | grep gtsam
+```
+
+#### Known Build Issues: GCC 13 on aarch64
+
+Building GTSAM on **aarch64 (ARM64)** with **GCC 13+** (default on Ubuntu 24.04 / ROS2 Jazzy) triggers two false-positive compiler errors due to GTSAM's `-Werror`:
+
+**Issue 1: NEON array-bounds error**
+```
+error: array subscript '__Float64x2_t[0]' is partly outside array bounds
+of 'gtsam::ProductLieGroup<...>::Jacobian2 [1]' {aka 'Eigen::Matrix<double, 1, 1> [1]'}
+```
+
+GCC 13's stricter `-Werror=array-bounds` catches Eigen's NEON vectorization loading a 2-element `float64x2_t` from a 1-element `Matrix<double,1,1>`. The extra element is never used — this is a false positive.
+
+**Issue 2: maybe-uninitialized error**
+```
+error: 'Rt.Eigen::Matrix<double, 3, 3>::...::array[6]' may be used uninitialized
+   [-Werror=maybe-uninitialized]
+```
+
+GCC 13 incorrectly flags local Eigen matrices as potentially uninitialized in `Gal3.cpp` and similar files. Again a false positive — the matrices are always written before being read.
+
+**Fix**: Add both `-DEIGEN_DONT_VECTORIZE` and `-Wno-maybe-uninitialized` to `CMAKE_CXX_FLAGS`. The full cmake command is shown in the Configure and Build section above. Performance impact is negligible for our SLAM workload.
+
+#### Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| CMake can't find Eigen | `sudo apt install libeigen3-dev` (comes with ROS2 Jazzy) |
+| Out of memory during `make` | Use `make -j1` (much slower but safe) |
+| `undefined reference to TBB` | Ensure `-DGTSAM_WITH_TBB=OFF` was set |
+| CMake version too old | ROS2 Jazzy on Ubuntu 24.04 has CMake 3.28+, which is sufficient |
+| GCC 13 aarch64 NEON array-bounds error | Add `-DCMAKE_CXX_FLAGS="-DEIGEN_DONT_VECTORIZE -Wno-maybe-uninitialized"` (see above) |
+| GCC 13 aarch64 maybe-uninitialized error | Same fix as above — `-Wno-maybe-uninitialized` suppresses the false positive |
+
+#### After Installation: Build System Changes for Phase 2
+
+Once GTSAM is installed, the `CMakeLists.txt` will need these additions (done in Phase 2):
+
+```cmake
+find_package(GTSAM REQUIRED)
+# In target:
+ament_target_dependencies(gtsam_slam_node ... GTSAM)
+```
+
+And `package.xml` will need:
+
+```xml
+<depend>gtsam</depend>
+```
+
+### Phase 2: Replace EKF + Madgwick with GTSAM Factor Graph
+
+**Goal**: Eliminate cascaded filters and bias handling issues by building a GTSAM-based SLAM node.
+
+This phase is broken into sub-phases for incremental testing on hardware:
+
+#### Phase 2a: Node skeleton + IMU preintegration + odometry + altitude
+
+Minimum viable GTSAM node that produces real output, replacing EKF + Madgwick for pose estimation.
+
+**Factors implemented**:
+- `CombinedImuFactor` — IMU preintegration between keyframes (replaces Madgwick + EKF)
+- `BetweenFactor<Pose3>` — rf2o scan-matching odometry (high Z/roll/pitch uncertainty)
+- `PriorFactor<double>` — barometric altitude from LPS22HB (Z constraint)
+
+**Keyframe selection**: Trigger a new keyframe when accumulated motion exceeds a threshold (e.g., translation > 0.3m or yaw rotation > 15°), determined from rf2o odometry.
+
+**Outputs**:
+- Publishes `/odometry/filtered` (`nav_msgs/Odometry`)
+- Publishes TF `odom → base_link` from latest ISAM2 estimate
+
+**Not yet included**: Gravity/magnetometer orientation factors, map generation, loop closure.
+
+**Node structure**:
+- Subscribes to `/imu/data_raw`, `/odom_rf2o`, `/pressure`
+- GTSAM state per keyframe: `Pose3` (key `X`), `Vel3` (key `V`), `imuBias::ConstantBias` (key `B`)
+- First keyframe anchored with `PriorFactor<Pose3>` at identity
+- Config via `config/gtsam_slam_config.yaml` (all noise sigmas, keyframe thresholds, ISAM2 params)
+- Separate launch files: `launch_gtsam_rpi4.py`, `launch_gtsam_opi5.py`
+- Original EKF+Madgwick+slam_toolbox launch files remain untouched for backward compatibility
+
+#### Phase 2b: Gravity + magnetometer orientation factors
+
+**Factors added**:
+- `PriorFactor<Rot3>` — gravity constraint (roll/pitch from accelerometer, yaw unconstrained)
+- `PriorFactor<Rot3>` — magnetometer heading (adaptive trust based on field consistency)
+
+**Subscribes additionally**: `/imu/mag`
+
+**Advantage**: Fully decouples tilt from heading estimation. Indoor magnetometer corruption no longer affects roll/pitch.
+
+#### Phase 2c: Occupancy grid map generation
+
+**Goal**: Replace slam_toolbox with GTSAM-driven map generation. Unified factor graph producing both pose estimates and occupancy grid.
+
+1. After each ISAM2 update, extract the current pose estimate
+2. Project LiDAR scans into the map frame using optimized poses
+3. Build occupancy grid using log-odds update (same approach as slam_toolbox)
+4. Publish `/map` (`nav_msgs/OccupancyGrid`) and TF `map → odom`
+5. Remove slam_toolbox dependency entirely
+
+**Subscribes additionally**: `/scan` for map building
+
+#### Phase 2d: Loop closure (ScanContext + ICP)
+
+**Factors added**:
+- `BetweenFactor<Pose3>` — loop closure constraints between non-consecutive keyframes
+
+**Implementation**:
+1. Compute ScanContext descriptor for each keyframe's laser scan
+2. Match against past keyframe descriptors for place recognition
+3. Align matched scans with ICP for precise relative pose
+4. Add loop closure factor and trigger ISAM2 re-optimization — corrects all past poses
+
+### Phase 3: Platform Parity and Cleanup
 
 **Goal**: Unified factor graph producing both pose estimates and occupancy grid.
 
@@ -369,14 +517,15 @@ This is a minimal change that immediately addresses the Z underconstraint issue.
 3. Build occupancy grid using the same approach as slam_toolbox (log-odds update)
 4. Remove slam_toolbox dependency entirely
 
-### Phase 4: Orange Pi 5 Parity
+### Phase 3: Platform Parity and Cleanup
 
-**Goal**: Ensure both SBC platforms have identical functionality.
+**Goal**: Ensure both SBC platforms have identical functionality and clean up deprecated config.
 
 1. Remove the Madgwick filter dependency from the RPi4 launch (it's now handled by GTSAM)
 2. Ensure the OPI5 launch has the same GTSAM configuration
 3. Fix the static transform for OPI5 (`launch/launch_opi5.py:167-171`) to match physical sensor geometry
 4. Move IMU calibration to online bias estimation (no more separate calibration step)
+5. Remove deprecated config files: `imu_odom_config.yaml`, `imu_filter_madgwick.yaml`
 
 ---
 
@@ -387,21 +536,25 @@ portable_slam/
 ├── src/
 │   ├── sense_hat_node.cpp         # EXISTING — publish raw IMU + mag
 │   ├── icm20948.cpp               # EXISTING — ICM-20948 driver
-│   ├── lps22hb_node.cpp           # NEW — LPS22HB barometer driver
-│   ├── lps22hb.cpp                # NEW — LPS22HB I2C driver
-│   ├── gtsam_slam_node.cpp         # NEW — main GTSAM SLAM node
+│   ├── lps22hb_node.cpp           # NEW (Phase 1) — LPS22HB barometer ROS2 node
+│   ├── lps22hb.cpp                # NEW (Phase 1) — LPS22HB I2C driver
+│   ├── gtsam_slam_node.cpp         # NEW (Phase 2a) — main GTSAM SLAM node
 │   └── static_transform_node.cpp  # EXISTING
 ├── include/portable_slam/
 │   ├── icm20948.hpp               # EXISTING
-│   ├── lps22hb.hpp                # NEW
-│   └── gtsam_slam.hpp             # NEW — keyframe selection, loop closure, map building
+│   ├── lps22hb.hpp                # NEW (Phase 1)
+│   └── gtsam_slam.hpp             # NEW (Phase 2a) — keyframe selection, factor graph state
 ├── config/
-│   ├── gtsam_slam_config.yaml     # NEW — ISAM2 parameters, noise models, keyframe thresholds
-│   ├── imu_odom_config.yaml       # DEPRECATED (replaced by GTSAM)
-│   └── imu_filter_madgwick.yaml   # DEPRECATED (replaced by GTSAM)
+│   ├── gtsam_slam_config.yaml     # NEW (Phase 2a) — ISAM2 parameters, noise models, keyframe thresholds
+│   ├── lps22hb_config.yaml        # NEW (Phase 1) — LPS22HB parameters
+│   ├── imu_odom_config.yaml       # DEPRECATED after Phase 2d (kept for backward compat)
+│   ├── imu_filter_madgwick.yaml   # DEPRECATED after Phase 2d (kept for backward compat)
+│   └── mapper_params_online_async.yaml  # DEPRECATED after Phase 2c
 └── launch/
-    ├── launch_rpi4.py              # MODIFIED — remove EKF, Madgwick, slam_toolbox; add gtsam_slam
-    └── launch_opi5.py              # MODIFIED — same as rpi4
+    ├── launch_rpi4.py              # EXISTING — EKF + Madgwick + slam_toolbox pipeline
+    ├── launch_opi5.py              # EXISTING — EKF + Madgwick + slam_toolbox pipeline
+    ├── launch_gtsam_rpi4.py        # NEW (Phase 2a) — GTSAM pipeline for RPi4
+    └── launch_gtsam_opi5.py        # NEW (Phase 2a) — GTSAM pipeline for OPI5
 ```
 
 ### New gtsam_slam_node Topics

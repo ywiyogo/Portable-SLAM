@@ -16,6 +16,8 @@
   <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
 
+  <depend>gtsam</depend>
+
   <depend>slam_toolbox</depend>
   <depend>ydlidar_ros2_driver</depend>
   <depend>robot_localization</depend>
