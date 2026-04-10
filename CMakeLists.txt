@@ -59,6 +59,7 @@ ament_target_dependencies(gtsam_slam_node
     "rclcpp"
     "sensor_msgs"
     "nav_msgs"
+    "geometry_msgs"
     "tf2_ros"
 )
 target_link_libraries(gtsam_slam_node gtsam)
