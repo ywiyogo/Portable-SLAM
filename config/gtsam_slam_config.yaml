@@ -40,7 +40,7 @@ gtsam_slam_node:
     imu_frame: "imu_link"
 
     # Topic names
-    imu_topic: "/imu/data_raw"
-    odom_topic: "/odom_rf2o"
-    pressure_topic: "/pressure"
-    output_odom_topic: "/odometry/filtered"
+    imu_topic: "imu/data_raw"
+    odom_topic: "odom_rf2o"
+    pressure_topic: "pressure"
+    output_odom_topic: "odometry/filtered"

@@ -458,6 +458,10 @@ Minimum viable GTSAM node that produces real output, replacing EKF + Madgwick fo
 - `CombinedImuFactor` — IMU preintegration between keyframes (replaces Madgwick + EKF)
 - `BetweenFactor<Pose3>` — rf2o scan-matching odometry (high Z/roll/pitch uncertainty)
 - `PriorFactor<double>` — barometric altitude from LPS22HB (Z constraint)
+  > **Implementation note**: Phase 2a actually uses `PriorFactor<Pose3>` with noise
+  > `[10,10,10,10,10, altitude_sigma]` to constrain only Z while keeping all other
+  > DOF unconstrained. A separate `PriorFactor<double>` with a disconnected `Symbol('Z',idx)`
+  > variable would create a disconnected graph component.
 
 **Keyframe selection**: Trigger a new keyframe when accumulated motion exceeds a threshold (e.g., translation > 0.3m or yaw rotation > 15°), determined from rf2o odometry.
 

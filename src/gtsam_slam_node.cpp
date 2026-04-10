@@ -48,6 +48,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/fluid_pressure.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Quaternion.h>
 #include <tf2_ros/transform_broadcaster.h>
 
 #include "portable_slam/gtsam_slam.hpp"
@@ -58,7 +60,6 @@ using gtsam::symbol_shorthand::X;
 
 GtsamSlamNode::GtsamSlamNode()
     : Node("gtsam_slam_node"),
-      isam2_(makeIsam2Params()),
       odom_noise_sigmas_(
           (gtsam::Vector(6) << 0.1, 0.1, 0.01, 0.05, 0.05, 10.0)
               .finished()) {
@@ -102,23 +103,23 @@ void GtsamSlamNode::declareParameters() {
   this->declare_parameter("odom_frame", "odom");
   this->declare_parameter("base_frame", "base_link");
   this->declare_parameter("imu_frame", "imu_link");
-  this->declare_parameter("imu_topic", "/imu/data_raw");
-  this->declare_parameter("odom_topic", "/odom_rf2o");
-  this->declare_parameter("pressure_topic", "/pressure");
-  this->declare_parameter("output_odom_topic", "/odometry/filtered");
+  this->declare_parameter("imu_topic", "imu/data_raw");
+  this->declare_parameter("odom_topic", "odom_rf2o");
+  this->declare_parameter("pressure_topic", "pressure");
+  this->declare_parameter("output_odom_topic", "odometry/filtered");
 }
 
 void GtsamSlamNode::loadParameters() {
   keyframe_trans_thresh_ = this->get_parameter("keyframe_trans_thresh").as_double();
   keyframe_rot_thresh_ = this->get_parameter("keyframe_rot_thresh").as_double();
-  accel_noise_sigma = this->get_parameter("accel_noise_sigma").as_double();
-  gyro_noise_sigma = this->get_parameter("gyro_noise_sigma").as_double();
-  accel_bias_rw_sigma = this->get_parameter("accel_bias_rw_sigma").as_double();
-  gyro_bias_rw_sigma = this->get_parameter("gyro_bias_rw_sigma").as_double();
-  integration_cov_sigma = this->get_parameter("integration_cov_sigma").as_double();
-  bias_acc_cov_sigma = this->get_parameter("bias_acc_cov_sigma").as_double();
-  bias_gyro_cov_sigma = this->get_parameter("bias_gyro_cov_sigma").as_double();
-  bias_init_sigma = this->get_parameter("bias_init_sigma").as_double();
+  accel_noise_sigma_ = this->get_parameter("accel_noise_sigma").as_double();
+  gyro_noise_sigma_ = this->get_parameter("gyro_noise_sigma").as_double();
+  accel_bias_rw_sigma_ = this->get_parameter("accel_bias_rw_sigma").as_double();
+  gyro_bias_rw_sigma_ = this->get_parameter("gyro_bias_rw_sigma").as_double();
+  integration_cov_sigma_ = this->get_parameter("integration_cov_sigma").as_double();
+  bias_acc_cov_sigma_ = this->get_parameter("bias_acc_cov_sigma").as_double();
+  bias_gyro_cov_sigma_ = this->get_parameter("bias_gyro_cov_sigma").as_double();
+  bias_init_sigma_ = this->get_parameter("bias_init_sigma").as_double();
 
   auto grav = this->get_parameter("gravity").as_double_array();
   n_gravity_ = gtsam::Vector3(grav[0], grav[1], grav[2]);
@@ -129,73 +130,71 @@ void GtsamSlamNode::loadParameters() {
        sigmas[4], sigmas[5])
           .finished();
 
-  altitude_sigma = this->get_parameter("altitude_sigma").as_double();
+  altitude_sigma_ = this->get_parameter("altitude_sigma").as_double();
   isam2_relinearize_thresh_ =
       this->get_parameter("isam2_relinearize_thresh").as_double();
   isam2_relinearize_skip_ =
       this->get_parameter("isam2_relinearize_skip").as_double();
-  prior_pose_sigma = this->get_parameter("prior_pose_sigma").as_double();
-  prior_vel_sigma = this->get_parameter("prior_vel_sigma").as_double();
+  prior_pose_sigma_ = this->get_parameter("prior_pose_sigma").as_double();
+  prior_vel_sigma_ = this->get_parameter("prior_vel_sigma").as_double();
 
   odom_frame_ = this->get_parameter("odom_frame").as_string();
   base_frame_ = this->get_parameter("base_frame").as_string();
   imu_frame_ = this->get_parameter("imu_frame").as_string();
-  imu_topic = this->get_parameter("imu_topic").as_string();
-  odom_topic = this->get_parameter("odom_topic").as_string();
-  pressure_topic = this->get_parameter("pressure_topic").as_string();
-  output_odom_topic = this->get_parameter("output_odom_topic").as_string();
+  imu_topic_ = this->get_parameter("imu_topic").as_string();
+  odom_topic_ = this->get_parameter("odom_topic").as_string();
+  pressure_topic_ = this->get_parameter("pressure_topic").as_string();
+  output_odom_topic_ = this->get_parameter("output_odom_topic").as_string();
 }
 
 void GtsamSlamNode::initPublishers() {
   odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>(
-      output_odom_topic, 10);
+      output_odom_topic_, 10);
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 }
 
 void GtsamSlamNode::initSubscribers() {
+  auto cb_group = this->create_callback_group(
+      rclcpp::CallbackGroupType::MutuallyExclusive);
+
   rclcpp::SubscriptionOptions sub_opts;
-  sub_opts.callback_group =
-      this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  sub_opts.callback_group = cb_group;
 
   imu_sub_ = this->create_subscription<sensor_msgs::msg::Imu>(
-      imu_topic, rclcpp::SensorDataQoS(),
+      imu_topic_, rclcpp::SensorDataQoS(),
       std::bind(&GtsamSlamNode::imuCallback, this, std::placeholders::_1),
       sub_opts);
 
-  auto odom_sub_opts = sub_opts;
-  odom_sub_opts.callback_group =
-      this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-      odom_topic, rclcpp::SensorDataQoS(),
+      odom_topic_, rclcpp::SensorDataQoS(),
       std::bind(&GtsamSlamNode::odomCallback, this, std::placeholders::_1),
-      odom_sub_opts);
+      sub_opts);
 
-  auto pressure_sub_opts = sub_opts;
-  pressure_sub_opts.callback_group =
-      this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   pressure_sub_ = this->create_subscription<sensor_msgs::msg::FluidPressure>(
-      pressure_topic, rclcpp::SensorDataQoS(),
+      pressure_topic_, rclcpp::SensorDataQoS(),
       std::bind(&GtsamSlamNode::pressureCallback, this,
                 std::placeholders::_1),
-      pressure_sub_opts);
+      sub_opts);
 }
 
 void GtsamSlamNode::initGtsam() {
+  isam2_ = std::make_unique<gtsam::ISAM2>(makeIsam2Params());
+
   auto imu_params = gtsam::PreintegrationCombinedParams::MakeSharedU(
       n_gravity_.norm());
 
   imu_params->accelerometerCovariance =
-      std::pow(accel_noise_sigma, 2) * gtsam::I_3x3;
+      std::pow(accel_noise_sigma_, 2) * gtsam::I_3x3;
   imu_params->gyroscopeCovariance =
-      std::pow(gyro_noise_sigma, 2) * gtsam::I_3x3;
+      std::pow(gyro_noise_sigma_, 2) * gtsam::I_3x3;
   imu_params->integrationCovariance =
-      integration_cov_sigma * gtsam::I_3x3;
+      integration_cov_sigma_ * gtsam::I_3x3;
   imu_params->biasAccCovariance =
-      std::pow(bias_acc_cov_sigma, 2) * gtsam::I_3x3;
+      std::pow(bias_acc_cov_sigma_, 2) * gtsam::I_3x3;
   imu_params->biasOmegaCovariance =
-      std::pow(bias_gyro_cov_sigma, 2) * gtsam::I_3x3;
-  imu_params->biasAccOmegaInit =
-      std::pow(bias_init_sigma, 2) * gtsam::Matrix6::Identity();
+      std::pow(bias_gyro_cov_sigma_, 2) * gtsam::I_3x3;
+  imu_params->biasAccOmegaInt =
+      std::pow(bias_init_sigma_, 2) * gtsam::Matrix6::Identity();
 
   imu_params_ = imu_params;
 
@@ -207,16 +206,16 @@ void GtsamSlamNode::initGtsam() {
   gtsam::Vector3 prior_vel = gtsam::Vector3::Zero();
 
   auto prior_pose_noise = gtsam::noiseModel::Diagonal::Sigmas(
-      (gtsam::Vector(6) << prior_pose_sigma, prior_pose_sigma,
-       prior_pose_sigma, prior_pose_sigma, prior_pose_sigma, prior_pose_sigma)
-          .finished());
+      (gtsam::Vector(6) << prior_pose_sigma_, prior_pose_sigma_,
+       prior_pose_sigma_, prior_pose_sigma_, prior_pose_sigma_, prior_pose_sigma_)
+           .finished());
   auto prior_vel_noise = gtsam::noiseModel::Diagonal::Sigmas(
-      (gtsam::Vector(3) << prior_vel_sigma, prior_vel_sigma, prior_vel_sigma)
-          .finished());
+      (gtsam::Vector(3) << prior_vel_sigma_, prior_vel_sigma_, prior_vel_sigma_)
+           .finished());
   auto prior_bias_noise = gtsam::noiseModel::Diagonal::Sigmas(
-      (gtsam::Vector(6) << bias_init_sigma, bias_init_sigma, bias_init_sigma,
-       bias_init_sigma, bias_init_sigma, bias_init_sigma)
-          .finished());
+      (gtsam::Vector(6) << bias_init_sigma_, bias_init_sigma_, bias_init_sigma_,
+       bias_init_sigma_, bias_init_sigma_, bias_init_sigma_)
+           .finished());
 
   new_factors_.add(gtsam::PriorFactor<gtsam::Pose3>(
       X(keyframe_index_), prior_pose, prior_pose_noise));
@@ -229,7 +228,7 @@ void GtsamSlamNode::initGtsam() {
   new_values_.insert(V(keyframe_index_), prior_vel);
   new_values_.insert(B(keyframe_index_), current_bias_);
 
-  isam2_.update(new_factors_, new_values_);
+  isam2_->update(new_factors_, new_values_);
   new_factors_ = gtsam::NonlinearFactorGraph();
   new_values_.clear();
 
@@ -293,7 +292,7 @@ void GtsamSlamNode::odomCallback(
   }
 
   rclcpp::Time stamp(msg->header.stamp);
-  gtsam::Values optimized = isam2_.calculateEstimate();
+  gtsam::Values optimized = isam2_->calculateEstimate();
   if (optimized.exists(X(keyframe_index_)) && optimized.exists(V(keyframe_index_))) {
     auto kf_pose = optimized.at<gtsam::Pose3>(X(keyframe_index_));
     auto kf_vel = optimized.at<gtsam::Vector3>(V(keyframe_index_));
@@ -353,14 +352,14 @@ void GtsamSlamNode::addNewKeyframe(
     gtsam::Pose3 alt_pose(gtsam::Rot3(),
                           gtsam::Point3(0.0, 0.0, latest_altitude_));
     auto alt_noise = gtsam::noiseModel::Diagonal::Sigmas(
-        (gtsam::Vector(6) << 10.0, 10.0, 10.0, 10.0, 10.0, altitude_sigma)
+        (gtsam::Vector(6) << 10.0, 10.0, 10.0, 10.0, 10.0, altitude_sigma_)
             .finished());
     new_factors_.add(gtsam::PriorFactor<gtsam::Pose3>(
         X(keyframe_index_), alt_pose, alt_noise));
   }
 
   gtsam::NavState prev_state;
-  gtsam::Values optimized = isam2_.calculateEstimate();
+  gtsam::Values optimized = isam2_->calculateEstimate();
   if (optimized.exists(X(prev_idx))) {
     auto prev_pose = optimized.at<gtsam::Pose3>(X(prev_idx));
     auto prev_vel = optimized.at<gtsam::Vector3>(V(prev_idx));
@@ -372,8 +371,8 @@ void GtsamSlamNode::addNewKeyframe(
   new_values_.insert(V(keyframe_index_), predicted_state.velocity());
   new_values_.insert(B(keyframe_index_), current_bias_);
 
-  isam2_.update(new_factors_, new_values_);
-  isam2_.update();
+  isam2_->update(new_factors_, new_values_);
+  isam2_->update();
 
   new_factors_ = gtsam::NonlinearFactorGraph();
   new_values_.clear();
@@ -381,7 +380,7 @@ void GtsamSlamNode::addNewKeyframe(
   double pim_dt = pim_->deltaTij();
   pim_->resetIntegrationAndSetBias(current_bias_);
 
-  auto updated_bias = isam2_.calculateEstimate()
+  auto updated_bias = isam2_->calculateEstimate()
                           .at<gtsam::imuBias::ConstantBias>(
                               B(keyframe_index_));
   current_bias_ = updated_bias;
@@ -403,14 +402,14 @@ void GtsamSlamNode::publishOdometry(const gtsam::Pose3& pose,
   odom_msg.child_frame_id = base_frame_;
 
   const auto& t = pose.translation();
-  const auto& r = pose.rotation().quaternion();
+  const auto q = pose.rotation().toQuaternion();
   odom_msg.pose.pose.position.x = t.x();
   odom_msg.pose.pose.position.y = t.y();
   odom_msg.pose.pose.position.z = t.z();
-  odom_msg.pose.pose.orientation.w = r(0);
-  odom_msg.pose.pose.orientation.x = r(1);
-  odom_msg.pose.pose.orientation.y = r(2);
-  odom_msg.pose.pose.orientation.z = r(3);
+  odom_msg.pose.pose.orientation.w = q.w();
+  odom_msg.pose.pose.orientation.x = q.x();
+  odom_msg.pose.pose.orientation.y = q.y();
+  odom_msg.pose.pose.orientation.z = q.z();
 
   odom_msg.twist.twist.linear.x = vel(0);
   odom_msg.twist.twist.linear.y = vel(1);
@@ -430,10 +429,10 @@ void GtsamSlamNode::publishOdometry(const gtsam::Pose3& pose,
   tf.transform.translation.x = t.x();
   tf.transform.translation.y = t.y();
   tf.transform.translation.z = t.z();
-  tf.transform.rotation.w = r(0);
-  tf.transform.rotation.x = r(1);
-  tf.transform.rotation.y = r(2);
-  tf.transform.rotation.z = r(3);
+  tf.transform.rotation.w = q.w();
+  tf.transform.rotation.x = q.x();
+  tf.transform.rotation.y = q.y();
+  tf.transform.rotation.z = q.z();
   tf_broadcaster_->sendTransform(tf);
 }
 

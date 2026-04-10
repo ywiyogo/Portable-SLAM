@@ -70,7 +70,7 @@ class GtsamSlamNode : public rclcpp::Node {
   /// Create odometry publisher and TF broadcaster
   void initPublishers();
 
-  /// Create subscribers for /imu/data_raw, /odom_rf2o, /pressure with separate callback groups
+  /// Create subscribers for /imu/data_raw, /odom_rf2o, /pressure (single MutuallyExclusive group)
   void initSubscribers();
 
   /// Initialize GTSAM: build IMU preintegration params, create first keyframe priors, seed ISAM2
@@ -87,7 +87,7 @@ class GtsamSlamNode : public rclcpp::Node {
 
   std::shared_ptr<gtsam::PreintegrationCombinedParams> imu_params_;
   std::unique_ptr<gtsam::PreintegratedCombinedMeasurements> pim_;
-  gtsam::ISAM2 isam2_;
+  std::unique_ptr<gtsam::ISAM2> isam2_;
   gtsam::NonlinearFactorGraph new_factors_;
   gtsam::Values new_values_;
 
@@ -105,23 +105,23 @@ class GtsamSlamNode : public rclcpp::Node {
   double accel_noise_sigma_{0.4905};
   double gyro_noise_sigma_{0.01745};
   double accel_bias_rw_sigma_{0.001};
-  double gyro_bias_rw_sigma{0.0001};
-  double integration_cov_sigma{1e-8};
-  double bias_acc_cov_sigma{0.001};
-  double bias_gyro_cov_sigma{0.0001};
-  double bias_init_sigma{1e-3};
+  double gyro_bias_rw_sigma_{0.0001};
+  double integration_cov_sigma_{1e-8};
+  double bias_acc_cov_sigma_{0.001};
+  double bias_gyro_cov_sigma_{0.0001};
+  double bias_init_sigma_{1e-3};
   gtsam::Vector3 n_gravity_{0.0, 0.0, -9.81};
   gtsam::Vector6 odom_noise_sigmas_;
   double altitude_sigma_{1.0};
   double isam2_relinearize_thresh_{0.1};
   double isam2_relinearize_skip_{1.0};
-  double prior_pose_sigma{0.01};
-  double prior_vel_sigma{0.1};
+  double prior_pose_sigma_{0.01};
+  double prior_vel_sigma_{0.1};
   std::string odom_frame_{"odom"};
   std::string base_frame_{"base_link"};
   std::string imu_frame_{"imu_link"};
-  std::string imu_topic_{"/imu/data_raw"};
-  std::string odom_topic_{"/odom_rf2o"};
-  std::string pressure_topic_{"/pressure"};
-  std::string output_odom_topic_{"/odometry/filtered"};
+  std::string imu_topic_{"imu/data_raw"};
+  std::string odom_topic_{"odom_rf2o"};
+  std::string pressure_topic_{"pressure"};
+  std::string output_odom_topic_{"odometry/filtered"};
 };
