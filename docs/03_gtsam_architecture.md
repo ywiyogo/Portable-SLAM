@@ -502,15 +502,23 @@ Minimum viable GTSAM node that produces real output, replacing EKF + Madgwick fo
 
 **Advantage**: Fully decouples tilt from heading estimation. Indoor magnetometer corruption no longer affects roll/pitch.
 
-#### Phase 2c: Occupancy grid map generation
+#### Phase 2c: Occupancy grid map generation ✅ COMPLETE
 
 **Goal**: Replace slam_toolbox with GTSAM-driven map generation. Unified factor graph producing both pose estimates and occupancy grid.
 
-1. After each ISAM2 update, extract the current pose estimate
-2. Project LiDAR scans into the map frame using optimized poses
-3. Build occupancy grid using log-odds update (same approach as slam_toolbox)
-4. Publish `/map` (`nav_msgs/OccupancyGrid`) and TF `map → odom`
-5. Remove slam_toolbox dependency entirely
+**Implementation**:
+1. Subscribe to `/scan` (`sensor_msgs/LaserScan`) — stored in `latest_scan_` for next keyframe update
+2. On each keyframe, extract optimized Pose3 → project to Pose2 (x, y, yaw)
+3. Bresenham ray-trace from sensor origin to each endpoint: clear cells along ray, mark endpoint as occupied
+4. Log-odds occupancy grid with configurable hit/miss increments and clamping
+5. Periodic publishing of `/map` (`nav_msgs/OccupancyGrid`) at `map_update_interval`
+6. Publish TF `map → odom` (identity until loop closure in Phase 2d)
+
+**Map parameters** (from `gtsam_slam_config.yaml`):
+- `map_resolution: 0.05` — same as slam_toolbox
+- `map_size: 100.0` — 100m × 100m centered at origin (2000×2000 cells)
+- `log_odds_hit: 0.7`, `log_odds_miss: -0.2` — conservative update rates
+- `min_laser_range: 0.5`, `max_laser_range: 12.0` — same as slam_toolbox
 
 **Subscribes additionally**: `/scan` for map building
 
@@ -585,7 +593,6 @@ portable_slam/
 | Subscribe | `/odom_rf2o` | `nav_msgs/Odometry` | rf2o laser odometry (inter-keyframe) |
 | Publish | `/odometry/filtered` | `nav_msgs/Odometry` | Optimized odometry estimate |
 | Publish | `/map` | `nav_msgs/OccupancyGrid` | 2D occupancy grid map |
-| Publish | `/pose_graph` | `visualization_msgs/MarkerArray` | Pose graph visualization |
 | Publish | TF: `odom → base_link` | `tf2` | Real-time pose estimate |
 | Publish | TF: `map → odom` | `tf2` | Map-frame correction |
 

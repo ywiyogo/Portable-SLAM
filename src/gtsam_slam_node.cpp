@@ -1,28 +1,25 @@
 /**
  * @file gtsam_slam_node.cpp
- * @brief ROS2 node implementing Phase 2b of the GTSAM factor graph SLAM pipeline.
+ * @brief ROS2 node implementing Phase 2c of the GTSAM factor graph SLAM pipeline.
  *
- * This node replaces the Madgwick filter + robot_localization EKF with a single
- * GTSAM ISAM2 factor graph. It subscribes to raw IMU, rf2o laser odometry,
- * barometric pressure, and magnetometer, then publishes optimized odometry and
- * TF transforms.
+ * This node replaces the Madgwick filter + robot_localization EKF + slam_toolbox
+ * with a single GTSAM ISAM2 factor graph. It subscribes to raw IMU, rf2o laser
+ * odometry, barometric pressure, magnetometer, and laser scans, then publishes
+ * optimized odometry, TF transforms, and a 2D occupancy grid map.
  *
- * Factors implemented (Phase 2b):
- *   - CombinedImuFactor: IMU preintegration between keyframes (replaces Madgwick + EKF)
- *   - BetweenFactor<Pose3>: rf2o scan-matching odometry (high Z/roll/pitch uncertainty)
- *   - PriorFactor<Pose3>: barometric altitude Z constraint from LPS22HB
- *   - PriorFactor<Rot3>: gravity tilt constraint (roll/pitch from accelerometer)
- *   - PriorFactor<Rot3>: magnetometer heading (adaptive trust based on field consistency)
+ * Factors implemented (Phase 2c):
+ *   - CombinedImuFactor: IMU preintegration between keyframes
+ *   - BetweenFactor<Pose3>: rf2o scan-matching odometry
+ *   - PriorFactor<Pose3>: barometric altitude Z constraint
+ *   - PriorFactor<Rot3>: gravity tilt constraint (roll/pitch)
+ *   - PriorFactor<Rot3>: magnetometer heading (adaptive trust)
  *
- * GTSAM state per keyframe: Pose3 (X), Velocity3 (V), imuBias::ConstantBias (B)
+ * Map generation (Phase 2c):
+ *   - Bresenham ray-tracing with log-odds occupancy grid
+ *   - Projects 2D laser scan endpoints using optimized keyframe poses
+ *   - Publishes /map (nav_msgs/OccupancyGrid) and TF map→odom
  *
- * Keyframe selection: triggered when accumulated motion from rf2o exceeds
- * translation or rotation thresholds. Between keyframes, IMU data is
- * preintegrated. Inter-keyframe odometry is produced via IMU prediction
- * from the latest optimized keyframe state.
- *
- * Future phases will add: occupancy grid map generation (2c),
- * and loop closure with ScanContext (2d).
+ * Future phase: loop closure with ScanContext (2d).
  *
  * @author Yongkie Wiyogo
  */
@@ -33,6 +30,7 @@
 #include <optional>
 #include <string>
 
+#include <gtsam/geometry/Pose2.h>
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/inference/Symbol.h>
@@ -51,6 +49,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/fluid_pressure.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <sensor_msgs/msg/laser_scan.hpp>
 #include <sensor_msgs/msg/magnetic_field.hpp>
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
@@ -70,12 +69,13 @@ GtsamSlamNode::GtsamSlamNode()
   declareParameters();
   loadParameters();
   initGtsam();
+  initMap();
   initPublishers();
   initSubscribers();
 
   RCLCPP_INFO(this->get_logger(),
-              "GTSAM SLAM node initialized (Phase 2b: IMU + odometry + "
-              "altitude + gravity tilt + magnetometer)");
+              "GTSAM SLAM node initialized (Phase 2c: IMU + odometry + "
+              "altitude + gravity + magnetometer + occupancy grid)");
 }
 
 GtsamSlamNode::~GtsamSlamNode() = default;
@@ -111,6 +111,16 @@ void GtsamSlamNode::declareParameters() {
   this->declare_parameter("mag_yaw_sigma_outdoor", 0.1);
   this->declare_parameter("mag_consistency_thresh", 0.3);
   this->declare_parameter("mag_reference_norm", 50.0);
+
+  this->declare_parameter("map_resolution", 0.05);
+  this->declare_parameter("map_size", 100.0);
+  this->declare_parameter("log_odds_hit", 0.7);
+  this->declare_parameter("log_odds_miss", -0.2);
+  this->declare_parameter("min_laser_range", 0.5);
+  this->declare_parameter("max_laser_range", 12.0);
+  this->declare_parameter("map_update_interval", 2.0);
+  this->declare_parameter("scan_topic", "scan");
+  this->declare_parameter("map_frame", "map");
 
   this->declare_parameter("odom_frame", "odom");
   this->declare_parameter("base_frame", "base_link");
@@ -159,6 +169,18 @@ void GtsamSlamNode::loadParameters() {
   mag_consistency_thresh_ = this->get_parameter("mag_consistency_thresh").as_double();
   mag_reference_norm_ = this->get_parameter("mag_reference_norm").as_double();
 
+  map_resolution_ = this->get_parameter("map_resolution").as_double();
+  double map_size = this->get_parameter("map_size").as_double();
+  map_origin_x_ = -map_size / 2.0;
+  map_origin_y_ = -map_size / 2.0;
+  log_odds_hit_ = this->get_parameter("log_odds_hit").as_double();
+  log_odds_miss_ = this->get_parameter("log_odds_miss").as_double();
+  min_laser_range_ = this->get_parameter("min_laser_range").as_double();
+  max_laser_range_ = this->get_parameter("max_laser_range").as_double();
+  map_update_interval_ = this->get_parameter("map_update_interval").as_double();
+  scan_topic_ = this->get_parameter("scan_topic").as_string();
+  map_frame_ = this->get_parameter("map_frame").as_string();
+
   odom_frame_ = this->get_parameter("odom_frame").as_string();
   base_frame_ = this->get_parameter("base_frame").as_string();
   imu_frame_ = this->get_parameter("imu_frame").as_string();
@@ -172,6 +194,8 @@ void GtsamSlamNode::loadParameters() {
 void GtsamSlamNode::initPublishers() {
   odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>(
       output_odom_topic_, 10);
+  map_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
+      "map", 1);
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 }
 
@@ -201,6 +225,12 @@ void GtsamSlamNode::initSubscribers() {
   mag_sub_ = this->create_subscription<sensor_msgs::msg::MagneticField>(
       mag_topic_, rclcpp::SensorDataQoS(),
       std::bind(&GtsamSlamNode::magCallback, this,
+                std::placeholders::_1),
+      sub_opts);
+
+  scan_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
+      scan_topic_, rclcpp::SensorDataQoS(),
+      std::bind(&GtsamSlamNode::scanCallback, this,
                 std::placeholders::_1),
       sub_opts);
 }
@@ -331,13 +361,35 @@ void GtsamSlamNode::odomCallback(
         auto predicted = pim_->predict(gtsam::NavState(kf_pose, kf_vel),
                                        current_bias_);
         publishOdometry(predicted.pose(), predicted.velocity(), stamp);
-        return;
       } catch (const std::exception& e) {
         RCLCPP_WARN(this->get_logger(),
                      "IMU prediction failed: %s, using keyframe pose", e.what());
+        publishOdometry(kf_pose, kf_vel, stamp);
+      }
+    } else {
+      publishOdometry(kf_pose, kf_vel, stamp);
+    }
+
+    // Publish map→odom transform (identity for now; loop closure will update this)
+    geometry_msgs::msg::TransformStamped map_odom_tf;
+    map_odom_tf.header.stamp = stamp;
+    map_odom_tf.header.frame_id = map_frame_;
+    map_odom_tf.child_frame_id = odom_frame_;
+    map_odom_tf.transform.translation.x = 0.0;
+    map_odom_tf.transform.translation.y = 0.0;
+    map_odom_tf.transform.translation.z = 0.0;
+    map_odom_tf.transform.rotation.w = 1.0;
+    tf_broadcaster_->sendTransform(map_odom_tf);
+
+    // Periodic map publishing
+    if (map_updated_) {
+      auto now = this->now();
+      if ((now - last_map_publish_time_).seconds() >= map_update_interval_) {
+        publishMap(now);
+        last_map_publish_time_ = now;
+        map_updated_ = false;
       }
     }
-    publishOdometry(kf_pose, kf_vel, stamp);
   }
 }
 
@@ -459,6 +511,16 @@ void GtsamSlamNode::addNewKeyframe(
 
   last_keyframe_pose_ = current_pose;
 
+  // Update occupancy grid map with latest scan at the optimized keyframe pose
+  if (latest_scan_.has_value()) {
+    auto opt_pose = isam2_->calculateEstimate().at<gtsam::Pose3>(
+        X(keyframe_index_));
+    gtsam::Rot3 opt_rot = opt_pose.rotation();
+    double yaw = opt_rot.yaw();
+    gtsam::Pose2 pose_2d(opt_pose.x(), opt_pose.y(), yaw);
+    updateMap(pose_2d, latest_scan_.value());
+  }
+
   RCLCPP_INFO(this->get_logger(),
               "Keyframe %zu added (prev=%zu, IMU dt=%.3f s, alt=%.2f m)",
               keyframe_index_, prev_idx, pim_dt,
@@ -567,6 +629,138 @@ bool GtsamSlamNode::isMagConsistent(double mx, double my,
   double deviation = std::abs(mag_norm - mag_reference_norm_) /
                      mag_reference_norm_;
   return deviation < mag_consistency_thresh_;
+}
+
+void GtsamSlamNode::scanCallback(
+    const sensor_msgs::msg::LaserScan::SharedPtr msg) {
+  latest_scan_ = *msg;
+}
+
+void GtsamSlamNode::initMap() {
+  map_width_ = static_cast<size_t>(
+      std::round(-2.0 * map_origin_x_ / map_resolution_));
+  map_height_ = static_cast<size_t>(
+      std::round(-2.0 * map_origin_y_ / map_resolution_));
+  map_data_.assign(map_width_ * map_height_, -1);
+  log_odds_.assign(map_width_ * map_height_, 0.0);
+  RCLCPP_INFO(this->get_logger(),
+              "Map initialized: %zux%zu cells, %.2fm resolution, "
+              "origin (%.1f, %.1f)",
+              map_width_, map_height_, map_resolution_,
+              map_origin_x_, map_origin_y_);
+}
+
+bool GtsamSlamNode::worldToGrid(double wx, double wy,
+                                 int& gx, int& gy) const {
+  gx = static_cast<int>(std::round((wx - map_origin_x_) / map_resolution_));
+  gy = static_cast<int>(std::round((wy - map_origin_y_) / map_resolution_));
+  return gx >= 0 && gx < static_cast<int>(map_width_) &&
+         gy >= 0 && gy < static_cast<int>(map_height_);
+}
+
+void GtsamSlamNode::gridToWorld(int gx, int gy,
+                                 double& wx, double& wy) const {
+  wx = map_origin_x_ + gx * map_resolution_;
+  wy = map_origin_y_ + gy * map_resolution_;
+}
+
+void GtsamSlamNode::rayTrace(int x0, int y0, int x1, int y1) {
+  int dx = std::abs(x1 - x0);
+  int dy = std::abs(y1 - y0);
+  int sx = x0 < x1 ? 1 : -1;
+  int sy = y0 < y1 ? 1 : -1;
+  int err = dx - dy;
+
+  while (true) {
+    if (x0 == x1 && y0 == y1) break;
+
+    int idx = y0 * static_cast<int>(map_width_) + x0;
+    if (x0 >= 0 && x0 < static_cast<int>(map_width_) &&
+        y0 >= 0 && y0 < static_cast<int>(map_height_)) {
+      log_odds_[idx] += log_odds_miss_;
+      if (log_odds_[idx] < log_odds_clamp_min_) {
+        log_odds_[idx] = log_odds_clamp_min_;
+      }
+    }
+
+    int e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; x0 += sx; }
+    if (e2 < dx) { err += dx; y0 += sy; }
+  }
+}
+
+void GtsamSlamNode::updateMap(
+    const gtsam::Pose2& pose_2d,
+    const sensor_msgs::msg::LaserScan& scan) {
+  double angle = scan.angle_min;
+  double range_min = std::max(static_cast<double>(scan.range_min),
+                               min_laser_range_);
+  double range_max = std::min(static_cast<double>(scan.range_max),
+                               max_laser_range_);
+
+  for (size_t i = 0; i < scan.ranges.size(); ++i) {
+    double r = scan.ranges[i];
+    if (!std::isfinite(r) || r < range_min || r > range_max) {
+      angle += scan.angle_increment;
+      continue;
+    }
+
+    double beam_angle = angle + pose_2d.theta();
+    double endpoint_x = pose_2d.x() + r * std::cos(beam_angle);
+    double endpoint_y = pose_2d.y() + r * std::sin(beam_angle);
+
+    int endpoint_gx, endpoint_gy;
+    bool endpoint_valid = worldToGrid(endpoint_x, endpoint_y,
+                                       endpoint_gx, endpoint_gy);
+
+    int origin_gx, origin_gy;
+    bool origin_valid = worldToGrid(pose_2d.x(), pose_2d.y(),
+                                     origin_gx, origin_gy);
+
+    if (origin_valid && endpoint_valid) {
+      rayTrace(origin_gx, origin_gy, endpoint_gx, endpoint_gy);
+    }
+
+    if (endpoint_valid && origin_valid) {
+      int idx = endpoint_gy * static_cast<int>(map_width_) + endpoint_gx;
+      log_odds_[idx] += log_odds_hit_;
+      if (log_odds_[idx] > log_odds_clamp_max_) {
+        log_odds_[idx] = log_odds_clamp_max_;
+      }
+    }
+
+    angle += scan.angle_increment;
+  }
+
+  map_updated_ = true;
+}
+
+void GtsamSlamNode::publishMap(const rclcpp::Time& stamp) {
+  nav_msgs::msg::OccupancyGrid grid;
+  grid.header.stamp = stamp;
+  grid.header.frame_id = map_frame_;
+
+  grid.info.resolution = map_resolution_;
+  grid.info.width = map_width_;
+  grid.info.height = map_height_;
+  grid.info.origin.position.x = map_origin_x_;
+  grid.info.origin.position.y = map_origin_y_;
+  grid.info.origin.position.z = 0.0;
+  grid.info.origin.orientation.w = 1.0;
+
+  grid.data.resize(map_width_ * map_height_);
+  for (size_t i = 0; i < map_width_ * map_height_; ++i) {
+    if (log_odds_[i] == 0.0) {
+      grid.data[i] = -1;
+    } else {
+      int8_t prob = static_cast<int8_t>(
+          std::round((1.0 - 1.0 / (1.0 + std::exp(log_odds_[i]))) * 100.0));
+      grid.data[i] = std::max<int8_t>(0, std::min<int8_t>(100, prob));
+    }
+  }
+  map_data_ = grid.data;
+
+  map_pub_->publish(grid);
 }
 
 int main(int argc, char* argv[]) {

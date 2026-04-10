@@ -38,6 +38,17 @@ gtsam_slam_node:
     mag_consistency_thresh: 0.3       # relative deviation threshold for indoor/outdoor detection
     mag_reference_norm: 50.0          # μT — expected Earth magnetic field norm
 
+    # Occupancy grid map parameters
+    map_resolution: 0.05              # meters per cell (same as slam_toolbox)
+    map_size: 100.0                    # meters — total map width/height (centered at origin)
+    log_odds_hit: 0.7                  # log-odds increment for occupied cells
+    log_odds_miss: -0.2                # log-odds increment for free cells along ray
+    min_laser_range: 0.5              # meters — ignore returns closer than this
+    max_laser_range: 12.0             # meters — ignore returns farther than this
+    map_update_interval: 2.0          # seconds — how often to publish /map
+    scan_topic: "scan"
+    map_frame: "map"
+
     # ISAM2 optimizer parameters
     isam2_relinearize_thresh: 0.1     # relinearization threshold
     isam2_relinearize_skip: 1.0       # relinearization skip count

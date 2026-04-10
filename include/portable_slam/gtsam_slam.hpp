@@ -1,7 +1,6 @@
 /**
  * @brief GTSAM factor graph SLAM node for handheld portable SLAM.
- *        Phase 2b: IMU preintegration + rf2o odometry + barometric altitude
- *                  + gravity tilt + magnetometer heading.
+ *        Phase 2c: IMU + rf2o + altitude + gravity + magnetometer + occupancy grid.
  * @author Yongkie Wiyongo
  */
 
@@ -12,7 +11,9 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
+#include <gtsam/geometry/Pose2.h>
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/inference/Symbol.h>
@@ -26,9 +27,12 @@
 #include <gtsam/slam/PriorFactor.h>
 
 #include <rclcpp/rclcpp.hpp>
+#include <nav_msgs/msg/map_meta_data.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/fluid_pressure.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <sensor_msgs/msg/laser_scan.hpp>
 #include <sensor_msgs/msg/magnetic_field.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 
@@ -44,61 +48,53 @@ class GtsamSlamNode : public rclcpp::Node {
   ~GtsamSlamNode();
 
  private:
-  /// Integrate raw IMU measurement into preintegrated buffer (called per /imu/data_raw msg)
   void imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg);
-
-  /// Check keyframe threshold, trigger new keyframe if needed, publish optimized odometry
   void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
-
-  /// Convert barometric pressure to altitude and store for next keyframe's Z constraint
   void pressureCallback(const sensor_msgs::msg::FluidPressure::SharedPtr msg);
-
-  /// Store latest magnetometer reading
   void magCallback(const sensor_msgs::msg::MagneticField::SharedPtr msg);
 
-  /// Add a new keyframe: CombinedImuFactor + BetweenFactor + altitude + gravity + mag factors
-  void addNewKeyframe(const nav_msgs::msg::Odometry::SharedPtr& odom_msg);
+  /// Store laser scan for map update at next keyframe
+  void scanCallback(const sensor_msgs::msg::LaserScan::SharedPtr msg);
 
-  /// Publish nav_msgs/Odometry and TF odom→base_link from a GTSAM pose/velocity
+  void addNewKeyframe(const nav_msgs::msg::Odometry::SharedPtr& odom_msg);
   void publishOdometry(const gtsam::Pose3& pose, const gtsam::Velocity3& vel,
                        const rclcpp::Time& stamp);
-
-  /// Return true if translation or rotation since last keyframe exceeds thresholds
   bool isKeyframeNeeded(const gtsam::Pose3& current_pose) const;
-
-  /// Compute roll, pitch from gravity vector (accelerometer)
   gtsam::Rot3 gravityToRotation(double ax, double ay, double az) const;
-
-  /// Compute yaw from magnetometer vector and current tilt estimate
   double magnetometerYaw(double mx, double my, double mz,
                          const gtsam::Rot3& tilt) const;
-
-  /// Check if magnetometer field is consistent with Earth's reference
   bool isMagConsistent(double mx, double my, double mz) const;
 
-  /// Declare all ROS2 parameters with defaults (called before loadParameters)
+  /// Update occupancy grid with latest laser scan at the given pose
+  void updateMap(const gtsam::Pose2& pose_2d, const sensor_msgs::msg::LaserScan& scan);
+
+  /// Publish the current occupancy grid map
+  void publishMap(const rclcpp::Time& stamp);
+
+  /// Convert world (x,y) to grid indices; returns false if out of bounds
+  bool worldToGrid(double wx, double wy, int& gx, int& gy) const;
+
+  /// Convert grid indices to world coordinates
+  void gridToWorld(int gx, int gy, double& wx, double& wy) const;
+
+  /// Bresenham ray-trace from (x0,y0) to (x1,y1), clearing cells along the ray
+  void rayTrace(int x0, int y0, int x1, int y1);
+
   void declareParameters();
-
-  /// Load all declared parameters into member variables
   void loadParameters();
-
-  /// Create odometry publisher and TF broadcaster
   void initPublishers();
-
-  /// Create subscribers for /imu/data_raw, /odom_rf2o, /pressure, /imu/mag
   void initSubscribers();
-
-  /// Initialize GTSAM: build IMU preintegration params, create first keyframe priors, seed ISAM2
   void initGtsam();
-
-  /// Build ISAM2Params from loaded YAML parameters
+  void initMap();
   gtsam::ISAM2Params makeIsam2Params() const;
 
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<sensor_msgs::msg::FluidPressure>::SharedPtr pressure_sub_;
   rclcpp::Subscription<sensor_msgs::msg::MagneticField>::SharedPtr mag_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
   std::shared_ptr<gtsam::PreintegrationCombinedParams> imu_params_;
@@ -118,6 +114,27 @@ class GtsamSlamNode : public rclcpp::Node {
   gtsam::Vector3 latest_accel_{0.0, 0.0, 0.0};
   gtsam::Vector3 latest_mag_{0.0, 0.0, 0.0};
   bool mag_received_{false};
+
+  std::optional<sensor_msgs::msg::LaserScan> latest_scan_;
+
+  // Occupancy grid map state
+  std::vector<int8_t> map_data_;
+  std::vector<double> log_odds_;
+  size_t map_width_{0};
+  size_t map_height_{0};
+  double map_resolution_{0.05};
+  double map_origin_x_{-50.0};
+  double map_origin_y_{-50.0};
+  double log_odds_hit_{0.7};
+  double log_odds_miss_{-0.2};
+  double log_odds_clamp_max_{5.0};
+  double log_odds_clamp_min_{-5.0};
+  double min_laser_range_{0.5};
+  double max_laser_range_{12.0};
+  std::string map_frame_{"map"};
+  double map_update_interval_{2.0};
+  rclcpp::Time last_map_publish_time_{0, 0, RCL_ROS_TIME};
+  bool map_updated_{false};
 
   // Parameters loaded from YAML
   double keyframe_trans_thresh_{0.3};
@@ -144,6 +161,7 @@ class GtsamSlamNode : public rclcpp::Node {
   double mag_yaw_sigma_outdoor_{0.1};
   double mag_consistency_thresh_{0.3};
   double mag_reference_norm_{50.0};
+  std::string scan_topic_{"scan"};
   std::string mag_topic_{"imu/mag"};
   std::string odom_frame_{"odom"};
   std::string base_frame_{"base_link"};
