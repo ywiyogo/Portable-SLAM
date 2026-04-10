@@ -25,6 +25,19 @@ gtsam_slam_node:
     # Barometric altitude (from LPS22HB)
     altitude_sigma: 1.0               # meters — ±1m altitude accuracy
 
+    # Gravity tilt factor (from accelerometer)
+    # Roll/pitch are well-constrained by gravity; yaw is unconstrained
+    gravity_tilt_roll_sigma: 0.01     # radians (~0.6 deg) — high confidence from gravity
+    gravity_tilt_pitch_sigma: 0.01    # radians (~0.6 deg) — high confidence from gravity
+    gravity_tilt_yaw_sigma: 10.0      # radians — unconstrained (gravity gives no yaw info)
+
+    # Magnetometer heading factor (from ICM-20948 /imu/mag)
+    # Adaptive trust: field consistency check against Earth reference (~50 μT)
+    mag_yaw_sigma_indoor: 5.0         # radians (~286 deg) — almost no constraint indoors
+    mag_yaw_sigma_outdoor: 0.1        # radians (~5.7 deg) — useful heading reference outdoors
+    mag_consistency_thresh: 0.3       # relative deviation threshold for indoor/outdoor detection
+    mag_reference_norm: 50.0          # μT — expected Earth magnetic field norm
+
     # ISAM2 optimizer parameters
     isam2_relinearize_thresh: 0.1     # relinearization threshold
     isam2_relinearize_skip: 1.0       # relinearization skip count
@@ -43,4 +56,5 @@ gtsam_slam_node:
     imu_topic: "imu/data_raw"
     odom_topic: "odom_rf2o"
     pressure_topic: "pressure"
+    mag_topic: "imu/mag"
     output_odom_topic: "odometry/filtered"

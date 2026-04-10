@@ -450,20 +450,33 @@ And `package.xml` will need:
 
 This phase is broken into sub-phases for incremental testing on hardware:
 
-#### Phase 2a: Node skeleton + IMU preintegration + odometry + altitude
+#### Phase 2a: Node skeleton + IMU preintegration + odometry + altitude ✅ COMPLETE
 
 Minimum viable GTSAM node that produces real output, replacing EKF + Madgwick for pose estimation.
 
 **Factors implemented**:
 - `CombinedImuFactor` — IMU preintegration between keyframes (replaces Madgwick + EKF)
 - `BetweenFactor<Pose3>` — rf2o scan-matching odometry (high Z/roll/pitch uncertainty)
-- `PriorFactor<double>` — barometric altitude from LPS22HB (Z constraint)
-  > **Implementation note**: Phase 2a actually uses `PriorFactor<Pose3>` with noise
-  > `[10,10,10,10,10, altitude_sigma]` to constrain only Z while keeping all other
-  > DOF unconstrained. A separate `PriorFactor<double>` with a disconnected `Symbol('Z',idx)`
-  > variable would create a disconnected graph component.
+- `PriorFactor<Pose3>` — barometric altitude from LPS22HB (Z constraint, using wide roll/pitch/yaw/X/Y sigmas)
 
-**Keyframe selection**: Trigger a new keyframe when accumulated motion exceeds a threshold (e.g., translation > 0.3m or yaw rotation > 15°), determined from rf2o odometry.
+**Key design decisions**:
+- All subscribers share a single MutuallyExclusive callback group (avoids race conditions on shared `pim_`, `new_factors_`, etc.)
+- ISAM2 constructed in `initGtsam()` after `loadParameters()` via `unique_ptr` (ensures YAML params are used, not just defaults)
+- `PriorFactor<Pose3>` used for altitude instead of `PriorFactor<double>` with disconnected `Symbol('Z',idx)` variable
+
+#### Phase 2b: Gravity + magnetometer orientation factors ✅ COMPLETE
+
+**Factors added**:
+- `PriorFactor<Rot3>` — gravity tilt constraint (roll/pitch from accelerometer, yaw unconstrained)
+- `PriorFactor<Rot3>` — magnetometer heading (adaptive trust: field consistency check against Earth reference ~50 μT)
+
+**Subscribes additionally**: `/imu/mag` (`sensor_msgs/MagneticField`)
+
+**How it works**:
+- Gravity: extracts roll/pitch from accelerometer via `atan2`, adds `PriorFactor<Rot3>` with high yaw sigma (10 rad = unconstrained)
+- Magnetometer: tilts mag reading to horizontal plane using current roll/pitch estimate, computes `atan2` heading, checks field norm consistency against Earth reference (~50 μT) to auto-select indoor (sigma=5.0 rad) vs outdoor (sigma=0.1 rad) trust
+- If accel norm is too small (free-fall), gravity factor is skipped for that keyframe
+- If mag field is inconsistent with Earth reference, yaw_sigma is set very high (indoor), effectively making it a soft suggestion
 
 **Outputs**:
 - Publishes `/odometry/filtered` (`nav_msgs/Odometry`)

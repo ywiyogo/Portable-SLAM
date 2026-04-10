@@ -1,7 +1,8 @@
 /**
  * @brief GTSAM factor graph SLAM node for handheld portable SLAM.
- *        Phase 2a: IMU preintegration + rf2o odometry + barometric altitude.
- * @author Yongkie Wiyogo
+ *        Phase 2b: IMU preintegration + rf2o odometry + barometric altitude
+ *                  + gravity tilt + magnetometer heading.
+ * @author Yongkie Wiyongo
  */
 
 #pragma once
@@ -28,6 +29,7 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/fluid_pressure.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <sensor_msgs/msg/magnetic_field.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 
 #include <gtsam/navigation/ImuBias.h>
@@ -51,7 +53,10 @@ class GtsamSlamNode : public rclcpp::Node {
   /// Convert barometric pressure to altitude and store for next keyframe's Z constraint
   void pressureCallback(const sensor_msgs::msg::FluidPressure::SharedPtr msg);
 
-  /// Add a new keyframe: CombinedImuFactor + BetweenFactor<Pose3> + altitude PriorFactor
+  /// Store latest magnetometer reading
+  void magCallback(const sensor_msgs::msg::MagneticField::SharedPtr msg);
+
+  /// Add a new keyframe: CombinedImuFactor + BetweenFactor + altitude + gravity + mag factors
   void addNewKeyframe(const nav_msgs::msg::Odometry::SharedPtr& odom_msg);
 
   /// Publish nav_msgs/Odometry and TF odom→base_link from a GTSAM pose/velocity
@@ -60,6 +65,16 @@ class GtsamSlamNode : public rclcpp::Node {
 
   /// Return true if translation or rotation since last keyframe exceeds thresholds
   bool isKeyframeNeeded(const gtsam::Pose3& current_pose) const;
+
+  /// Compute roll, pitch from gravity vector (accelerometer)
+  gtsam::Rot3 gravityToRotation(double ax, double ay, double az) const;
+
+  /// Compute yaw from magnetometer vector and current tilt estimate
+  double magnetometerYaw(double mx, double my, double mz,
+                         const gtsam::Rot3& tilt) const;
+
+  /// Check if magnetometer field is consistent with Earth's reference
+  bool isMagConsistent(double mx, double my, double mz) const;
 
   /// Declare all ROS2 parameters with defaults (called before loadParameters)
   void declareParameters();
@@ -70,7 +85,7 @@ class GtsamSlamNode : public rclcpp::Node {
   /// Create odometry publisher and TF broadcaster
   void initPublishers();
 
-  /// Create subscribers for /imu/data_raw, /odom_rf2o, /pressure (single MutuallyExclusive group)
+  /// Create subscribers for /imu/data_raw, /odom_rf2o, /pressure, /imu/mag
   void initSubscribers();
 
   /// Initialize GTSAM: build IMU preintegration params, create first keyframe priors, seed ISAM2
@@ -82,6 +97,7 @@ class GtsamSlamNode : public rclcpp::Node {
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<sensor_msgs::msg::FluidPressure>::SharedPtr pressure_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::MagneticField>::SharedPtr mag_sub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
@@ -98,6 +114,10 @@ class GtsamSlamNode : public rclcpp::Node {
 
   double latest_altitude_{0.0};
   bool altitude_received_{false};
+
+  gtsam::Vector3 latest_accel_{0.0, 0.0, 0.0};
+  gtsam::Vector3 latest_mag_{0.0, 0.0, 0.0};
+  bool mag_received_{false};
 
   // Parameters loaded from YAML
   double keyframe_trans_thresh_{0.3};
@@ -117,6 +137,14 @@ class GtsamSlamNode : public rclcpp::Node {
   double isam2_relinearize_skip_{1.0};
   double prior_pose_sigma_{0.01};
   double prior_vel_sigma_{0.1};
+  double gravity_tilt_roll_sigma_{0.01};
+  double gravity_tilt_pitch_sigma_{0.01};
+  double gravity_tilt_yaw_sigma_{10.0};
+  double mag_yaw_sigma_indoor_{5.0};
+  double mag_yaw_sigma_outdoor_{0.1};
+  double mag_consistency_thresh_{0.3};
+  double mag_reference_norm_{50.0};
+  std::string mag_topic_{"imu/mag"};
   std::string odom_frame_{"odom"};
   std::string base_frame_{"base_link"};
   std::string imu_frame_{"imu_link"};

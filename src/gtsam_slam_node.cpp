@@ -1,15 +1,18 @@
 /**
  * @file gtsam_slam_node.cpp
- * @brief ROS2 node implementing Phase 2a of the GTSAM factor graph SLAM pipeline.
+ * @brief ROS2 node implementing Phase 2b of the GTSAM factor graph SLAM pipeline.
  *
  * This node replaces the Madgwick filter + robot_localization EKF with a single
- * GTSAM ISAM2 factor graph. It subscribes to raw IMU, rf2o laser odometry, and
- * barometric pressure, then publishes optimized odometry and TF transforms.
+ * GTSAM ISAM2 factor graph. It subscribes to raw IMU, rf2o laser odometry,
+ * barometric pressure, and magnetometer, then publishes optimized odometry and
+ * TF transforms.
  *
- * Factors implemented (Phase 2a):
+ * Factors implemented (Phase 2b):
  *   - CombinedImuFactor: IMU preintegration between keyframes (replaces Madgwick + EKF)
  *   - BetweenFactor<Pose3>: rf2o scan-matching odometry (high Z/roll/pitch uncertainty)
  *   - PriorFactor<Pose3>: barometric altitude Z constraint from LPS22HB
+ *   - PriorFactor<Rot3>: gravity tilt constraint (roll/pitch from accelerometer)
+ *   - PriorFactor<Rot3>: magnetometer heading (adaptive trust based on field consistency)
  *
  * GTSAM state per keyframe: Pose3 (X), Velocity3 (V), imuBias::ConstantBias (B)
  *
@@ -18,8 +21,8 @@
  * preintegrated. Inter-keyframe odometry is produced via IMU prediction
  * from the latest optimized keyframe state.
  *
- * Future phases will add: gravity/magnetometer orientation factors (2b),
- * occupancy grid map generation (2c), and loop closure with ScanContext (2d).
+ * Future phases will add: occupancy grid map generation (2c),
+ * and loop closure with ScanContext (2d).
  *
  * @author Yongkie Wiyogo
  */
@@ -48,6 +51,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/fluid_pressure.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <sensor_msgs/msg/magnetic_field.hpp>
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_ros/transform_broadcaster.h>
@@ -70,8 +74,8 @@ GtsamSlamNode::GtsamSlamNode()
   initSubscribers();
 
   RCLCPP_INFO(this->get_logger(),
-              "GTSAM SLAM node initialized (Phase 2a: IMU + odometry + "
-              "altitude, no loop closure)");
+              "GTSAM SLAM node initialized (Phase 2b: IMU + odometry + "
+              "altitude + gravity tilt + magnetometer)");
 }
 
 GtsamSlamNode::~GtsamSlamNode() = default;
@@ -100,12 +104,21 @@ void GtsamSlamNode::declareParameters() {
   this->declare_parameter("prior_pose_sigma", 0.01);
   this->declare_parameter("prior_vel_sigma", 0.1);
 
+  this->declare_parameter("gravity_tilt_roll_sigma", 0.01);
+  this->declare_parameter("gravity_tilt_pitch_sigma", 0.01);
+  this->declare_parameter("gravity_tilt_yaw_sigma", 10.0);
+  this->declare_parameter("mag_yaw_sigma_indoor", 5.0);
+  this->declare_parameter("mag_yaw_sigma_outdoor", 0.1);
+  this->declare_parameter("mag_consistency_thresh", 0.3);
+  this->declare_parameter("mag_reference_norm", 50.0);
+
   this->declare_parameter("odom_frame", "odom");
   this->declare_parameter("base_frame", "base_link");
   this->declare_parameter("imu_frame", "imu_link");
   this->declare_parameter("imu_topic", "imu/data_raw");
   this->declare_parameter("odom_topic", "odom_rf2o");
   this->declare_parameter("pressure_topic", "pressure");
+  this->declare_parameter("mag_topic", "imu/mag");
   this->declare_parameter("output_odom_topic", "odometry/filtered");
 }
 
@@ -138,12 +151,21 @@ void GtsamSlamNode::loadParameters() {
   prior_pose_sigma_ = this->get_parameter("prior_pose_sigma").as_double();
   prior_vel_sigma_ = this->get_parameter("prior_vel_sigma").as_double();
 
+  gravity_tilt_roll_sigma_ = this->get_parameter("gravity_tilt_roll_sigma").as_double();
+  gravity_tilt_pitch_sigma_ = this->get_parameter("gravity_tilt_pitch_sigma").as_double();
+  gravity_tilt_yaw_sigma_ = this->get_parameter("gravity_tilt_yaw_sigma").as_double();
+  mag_yaw_sigma_indoor_ = this->get_parameter("mag_yaw_sigma_indoor").as_double();
+  mag_yaw_sigma_outdoor_ = this->get_parameter("mag_yaw_sigma_outdoor").as_double();
+  mag_consistency_thresh_ = this->get_parameter("mag_consistency_thresh").as_double();
+  mag_reference_norm_ = this->get_parameter("mag_reference_norm").as_double();
+
   odom_frame_ = this->get_parameter("odom_frame").as_string();
   base_frame_ = this->get_parameter("base_frame").as_string();
   imu_frame_ = this->get_parameter("imu_frame").as_string();
   imu_topic_ = this->get_parameter("imu_topic").as_string();
   odom_topic_ = this->get_parameter("odom_topic").as_string();
   pressure_topic_ = this->get_parameter("pressure_topic").as_string();
+  mag_topic_ = this->get_parameter("mag_topic").as_string();
   output_odom_topic_ = this->get_parameter("output_odom_topic").as_string();
 }
 
@@ -173,6 +195,12 @@ void GtsamSlamNode::initSubscribers() {
   pressure_sub_ = this->create_subscription<sensor_msgs::msg::FluidPressure>(
       pressure_topic_, rclcpp::SensorDataQoS(),
       std::bind(&GtsamSlamNode::pressureCallback, this,
+                std::placeholders::_1),
+      sub_opts);
+
+  mag_sub_ = this->create_subscription<sensor_msgs::msg::MagneticField>(
+      mag_topic_, rclcpp::SensorDataQoS(),
+      std::bind(&GtsamSlamNode::magCallback, this,
                 std::placeholders::_1),
       sub_opts);
 }
@@ -266,11 +294,12 @@ void GtsamSlamNode::imuCallback(
   }
 
   gtsam::Vector3 accel(msg->linear_acceleration.x,
-                       msg->linear_acceleration.y,
-                       msg->linear_acceleration.z);
+                        msg->linear_acceleration.y,
+                        msg->linear_acceleration.z);
   gtsam::Vector3 gyro(msg->angular_velocity.x, msg->angular_velocity.y,
-                      msg->angular_velocity.z);
+                       msg->angular_velocity.z);
 
+  latest_accel_ = accel;
   pim_->integrateMeasurement(accel, gyro, dt);
 }
 
@@ -320,6 +349,14 @@ void GtsamSlamNode::pressureCallback(
   altitude_received_ = true;
 }
 
+void GtsamSlamNode::magCallback(
+    const sensor_msgs::msg::MagneticField::SharedPtr msg) {
+  latest_mag_ = gtsam::Vector3(msg->magnetic_field.x,
+                                msg->magnetic_field.y,
+                                msg->magnetic_field.z);
+  mag_received_ = true;
+}
+
 void GtsamSlamNode::addNewKeyframe(
     const nav_msgs::msg::Odometry::SharedPtr& odom_msg) {
   size_t prev_idx = keyframe_index_;
@@ -356,6 +393,41 @@ void GtsamSlamNode::addNewKeyframe(
             .finished());
     new_factors_.add(gtsam::PriorFactor<gtsam::Pose3>(
         X(keyframe_index_), alt_pose, alt_noise));
+  }
+
+  // Gravity tilt factor: constrain roll/pitch from accelerometer
+  double accel_norm = latest_accel_.norm();
+  gtsam::Rot3 gravity_rot = gtsam::Rot3();
+  if (accel_norm > 1e-6) {
+    gravity_rot = gravityToRotation(
+        latest_accel_(0), latest_accel_(1), latest_accel_(2));
+    auto tilt_noise = gtsam::noiseModel::Diagonal::Sigmas(
+        (gtsam::Vector(3) << gravity_tilt_roll_sigma_,
+         gravity_tilt_pitch_sigma_, gravity_tilt_yaw_sigma_)
+            .finished());
+    new_factors_.add(gtsam::PriorFactor<gtsam::Rot3>(
+        X(keyframe_index_), gravity_rot, tilt_noise));
+  }
+
+  // Magnetometer heading factor: constrain yaw (adaptive trust)
+  if (mag_received_) {
+    double mx = latest_mag_(0), my = latest_mag_(1), mz = latest_mag_(2);
+    gtsam::Rot3 current_tilt = gravity_rot;
+    if (accel_norm <= 1e-6) {
+      gtsam::Values opt = isam2_->calculateEstimate();
+      if (opt.exists(X(prev_idx))) {
+        current_tilt = opt.at<gtsam::Pose3>(X(prev_idx)).rotation();
+      }
+    }
+    double yaw_mag = magnetometerYaw(mx, my, mz, current_tilt);
+    gtsam::Rot3 mag_rot = gtsam::Rot3::Yaw(yaw_mag);
+    double yaw_sigma = isMagConsistent(mx, my, mz)
+                           ? mag_yaw_sigma_outdoor_
+                           : mag_yaw_sigma_indoor_;
+    auto mag_noise = gtsam::noiseModel::Diagonal::Sigmas(
+        (gtsam::Vector(3) << 10.0, 10.0, yaw_sigma).finished());
+    new_factors_.add(gtsam::PriorFactor<gtsam::Rot3>(
+        X(keyframe_index_), mag_rot, mag_noise));
   }
 
   gtsam::NavState prev_state;
@@ -449,6 +521,52 @@ bool GtsamSlamNode::isKeyframeNeeded(
   double rot = rpy.norm();
 
   return (trans > keyframe_trans_thresh_ || rot > keyframe_rot_thresh_);
+}
+
+gtsam::Rot3 GtsamSlamNode::gravityToRotation(double ax, double ay,
+                                              double az) const {
+  double norm = std::sqrt(ax * ax + ay * ay + az * az);
+  if (norm < 1e-6) {
+    return gtsam::Rot3();
+  }
+  double ax_n = ax / norm;
+  double ay_n = ay / norm;
+  double az_n = az / norm;
+
+  // Roll: rotation around X axis (from ay, az)
+  // Pitch: rotation around Y axis (from ax, az)
+  // In ENUp frame with gravity pointing -Z:
+  //   roll  = atan2(ay, az) when gravity is along -Z
+  //   pitch = atan2(-ax, sqrt(ay^2 + az^2))
+  // Note: the accelerometer measures -gravity when stationary,
+  // so ax ≈ 0, ay ≈ 0, az ≈ +g (opposite of gravity vector).
+  // For ENUp convention where gravity = (0,0,-g):
+  // the measured acceleration is (0,0,+g).
+  double roll = std::atan2(ay_n, az_n);
+  double pitch = std::atan2(-ax_n, std::sqrt(ay_n * ay_n + az_n * az_n));
+  double yaw = 0.0;
+
+  return gtsam::Rot3::RzRyRx(roll, pitch, yaw);
+}
+
+double GtsamSlamNode::magnetometerYaw(double mx, double my, double mz,
+                                       const gtsam::Rot3& tilt) const {
+  // Rotate magnetometer reading from body frame to level frame
+  // to get a 2D heading in the horizontal plane
+  gtsam::Vector3 mag_body(mx, my, mz);
+  gtsam::Vector3 mag_level = tilt.unrotate(mag_body);
+
+  // Yaw from level-frame magnetometer (X=East, Y=North in ENU)
+  double yaw = std::atan2(mag_level(0), mag_level(1));
+  return yaw;
+}
+
+bool GtsamSlamNode::isMagConsistent(double mx, double my,
+                                     double mz) const {
+  double mag_norm = std::sqrt(mx * mx + my * my + mz * mz);
+  double deviation = std::abs(mag_norm - mag_reference_norm_) /
+                     mag_reference_norm_;
+  return deviation < mag_consistency_thresh_;
 }
 
 int main(int argc, char* argv[]) {
