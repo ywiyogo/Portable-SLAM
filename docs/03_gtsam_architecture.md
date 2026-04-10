@@ -448,99 +448,19 @@ And `package.xml` will need:
 
 **Goal**: Eliminate cascaded filters and bias handling issues by building a GTSAM-based SLAM node.
 
+See **`docs/04_gtsam_implementation.md`** for detailed implementation notes, configuration, and status.
+
 This phase is broken into sub-phases for incremental testing on hardware:
 
 #### Phase 2a: Node skeleton + IMU preintegration + odometry + altitude ✅ COMPLETE
 
-Minimum viable GTSAM node that produces real output, replacing EKF + Madgwick for pose estimation.
-
-**Factors implemented**:
-- `CombinedImuFactor` — IMU preintegration between keyframes (replaces Madgwick + EKF)
-- `BetweenFactor<Pose3>` — rf2o scan-matching odometry (high Z/roll/pitch uncertainty)
-- `PriorFactor<Pose3>` — barometric altitude from LPS22HB (Z constraint, using wide roll/pitch/yaw/X/Y sigmas)
-
-**Key design decisions**:
-- All subscribers share a single MutuallyExclusive callback group (avoids race conditions on shared `pim_`, `new_factors_`, etc.)
-- ISAM2 constructed in `initGtsam()` after `loadParameters()` via `unique_ptr` (ensures YAML params are used, not just defaults)
-- `PriorFactor<Pose3>` used for altitude instead of `PriorFactor<double>` with disconnected `Symbol('Z',idx)` variable
-
 #### Phase 2b: Gravity + magnetometer orientation factors ✅ COMPLETE
-
-**Factors added**:
-- `PriorFactor<Rot3>` — gravity tilt constraint (roll/pitch from accelerometer, yaw unconstrained)
-- `PriorFactor<Rot3>` — magnetometer heading (adaptive trust: field consistency check against Earth reference ~50 μT)
-
-**Subscribes additionally**: `/imu/mag` (`sensor_msgs/MagneticField`)
-
-**How it works**:
-- Gravity: extracts roll/pitch from accelerometer via `atan2`, adds `PriorFactor<Rot3>` with high yaw sigma (10 rad = unconstrained)
-- Magnetometer: tilts mag reading to horizontal plane using current roll/pitch estimate, computes `atan2` heading, checks field norm consistency against Earth reference (~50 μT) to auto-select indoor (sigma=5.0 rad) vs outdoor (sigma=0.1 rad) trust
-- If accel norm is too small (free-fall), gravity factor is skipped for that keyframe
-- If mag field is inconsistent with Earth reference, yaw_sigma is set very high (indoor), effectively making it a soft suggestion
-
-**Outputs**:
-- Publishes `/odometry/filtered` (`nav_msgs/Odometry`)
-- Publishes TF `odom → base_link` from latest ISAM2 estimate
-
-**Not yet included**: Gravity/magnetometer orientation factors, map generation, loop closure.
-
-**Node structure**:
-- Subscribes to `/imu/data_raw`, `/odom_rf2o`, `/pressure`
-- GTSAM state per keyframe: `Pose3` (key `X`), `Vel3` (key `V`), `imuBias::ConstantBias` (key `B`)
-- First keyframe anchored with `PriorFactor<Pose3>` at identity
-- Config via `config/gtsam_slam_config.yaml` (all noise sigmas, keyframe thresholds, ISAM2 params)
-- Separate launch files: `launch_gtsam_rpi4.py`, `launch_gtsam_opi5.py`
-- Original EKF+Madgwick+slam_toolbox launch files remain untouched for backward compatibility
-
-#### Phase 2b: Gravity + magnetometer orientation factors
-
-**Factors added**:
-- `PriorFactor<Rot3>` — gravity constraint (roll/pitch from accelerometer, yaw unconstrained)
-- `PriorFactor<Rot3>` — magnetometer heading (adaptive trust based on field consistency)
-
-**Subscribes additionally**: `/imu/mag`
-
-**Advantage**: Fully decouples tilt from heading estimation. Indoor magnetometer corruption no longer affects roll/pitch.
 
 #### Phase 2c: Occupancy grid map generation ✅ COMPLETE
 
-**Goal**: Replace slam_toolbox with GTSAM-driven map generation. Unified factor graph producing both pose estimates and occupancy grid.
+#### Phase 2d: Loop closure (ScanContext + ICP) 🔲 DEFERRED
 
-**Implementation**:
-1. Subscribe to `/scan` (`sensor_msgs/LaserScan`) — stored in `latest_scan_` for next keyframe update
-2. On each keyframe, extract optimized Pose3 → project to Pose2 (x, y, yaw)
-3. Bresenham ray-trace from sensor origin to each endpoint: clear cells along ray, mark endpoint as occupied
-4. Log-odds occupancy grid with configurable hit/miss increments and clamping
-5. Periodic publishing of `/map` (`nav_msgs/OccupancyGrid`) at `map_update_interval`
-6. Publish TF `map → odom` (identity until loop closure in Phase 2d)
-
-**Map parameters** (from `gtsam_slam_config.yaml`):
-- `map_resolution: 0.05` — same as slam_toolbox
-- `map_size: 100.0` — 100m × 100m centered at origin (2000×2000 cells)
-- `log_odds_hit: 0.7`, `log_odds_miss: -0.2` — conservative update rates
-- `min_laser_range: 0.5`, `max_laser_range: 12.0` — same as slam_toolbox
-
-**Subscribes additionally**: `/scan` for map building
-
-#### Phase 2d: Loop closure (ScanContext + ICP)
-
-**Factors added**:
-- `BetweenFactor<Pose3>` — loop closure constraints between non-consecutive keyframes
-
-**Implementation**:
-1. Compute ScanContext descriptor for each keyframe's laser scan
-2. Match against past keyframe descriptors for place recognition
-3. Align matched scans with ICP for precise relative pose
-4. Add loop closure factor and trigger ISAM2 re-optimization — corrects all past poses
-
-### Phase 3: Platform Parity and Cleanup
-
-**Goal**: Unified factor graph producing both pose estimates and occupancy grid.
-
-1. After each ISAM2 update, extract the current pose estimate
-2. Project LiDAR scans into the map frame using optimized poses
-3. Build occupancy grid using the same approach as slam_toolbox (log-odds update)
-4. Remove slam_toolbox dependency entirely
+Not currently needed — the factor graph (IMU + rf2o + altitude + gravity + magnetometer) constrains drift well for typical handheld SLAM sessions. Can be added later if long-session drift becomes problematic.
 
 ### Phase 3: Platform Parity and Cleanup
 
@@ -561,107 +481,34 @@ portable_slam/
 ├── src/
 │   ├── sense_hat_node.cpp         # EXISTING — publish raw IMU + mag
 │   ├── icm20948.cpp               # EXISTING — ICM-20948 driver
-│   ├── lps22hb_node.cpp           # NEW (Phase 1) — LPS22HB barometer ROS2 node
-│   ├── lps22hb.cpp                # NEW (Phase 1) — LPS22HB I2C driver
-│   ├── gtsam_slam_node.cpp         # NEW (Phase 2a) — main GTSAM SLAM node
+│   ├── lps22hb_node.cpp           # Phase 1 — LPS22HB barometer ROS2 node
+│   ├── lps22hb.cpp                # Phase 1 — LPS22HB I2C driver
+│   ├── gtsam_slam_node.cpp         # Phase 2 — main GTSAM SLAM node
 │   └── static_transform_node.cpp  # EXISTING
 ├── include/portable_slam/
 │   ├── icm20948.hpp               # EXISTING
-│   ├── lps22hb.hpp                # NEW (Phase 1)
-│   └── gtsam_slam.hpp             # NEW (Phase 2a) — keyframe selection, factor graph state
+│   ├── lps22hb.hpp                # Phase 1
+│   └── gtsam_slam.hpp             # Phase 2 — keyframe selection, factor graph state
 ├── config/
-│   ├── gtsam_slam_config.yaml     # NEW (Phase 2a) — ISAM2 parameters, noise models, keyframe thresholds
-│   ├── lps22hb_config.yaml        # NEW (Phase 1) — LPS22HB parameters
-│   ├── imu_odom_config.yaml       # DEPRECATED after Phase 2d (kept for backward compat)
-│   ├── imu_filter_madgwick.yaml   # DEPRECATED after Phase 2d (kept for backward compat)
-│   └── mapper_params_online_async.yaml  # DEPRECATED after Phase 2c
+│   ├── gtsam_slam_config.yaml     # Phase 2 — ISAM2 parameters, noise models, keyframe thresholds, map params
+│   ├── lps22hb_config.yaml        # Phase 1 — LPS22HB parameters
+│   ├── imu_odom_config.yaml       # DEPRECATED after Phase 3 (kept for backward compat)
+│   ├── imu_filter_madgwick.yaml   # DEPRECATED after Phase 3 (kept for backward compat)
+│   └── mapper_params_online_async.yaml  # DEPRECATED after Phase 3
 └── launch/
     ├── launch_rpi4.py              # EXISTING — EKF + Madgwick + slam_toolbox pipeline
     ├── launch_opi5.py              # EXISTING — EKF + Madgwick + slam_toolbox pipeline
-    ├── launch_gtsam_rpi4.py        # NEW (Phase 2a) — GTSAM pipeline for RPi4
-    └── launch_gtsam_opi5.py        # NEW (Phase 2a) — GTSAM pipeline for OPI5
+    ├── launch_gtsam_rpi4.py        # Phase 2 — GTSAM pipeline for RPi4
+    └── launch_gtsam_opi5.py        # Phase 2 — GTSAM pipeline for OPI5
 ```
 
-### New gtsam_slam_node Topics
-
-| Direction | Topic | Type | Description |
-|-----------|-------|------|-------------|
-| Subscribe | `/imu/data_raw` | `sensor_msgs/Imu` | Raw IMU from sense_hat_node |
-| Subscribe | `/imu/mag` | `sensor_msgs/MagneticField` | Raw magnetometer |
-| Subscribe | `/scan` | `sensor_msgs/LaserScan` | LiDAR scans |
-| Subscribe | `/pressure` | `sensor_msgs/FluidPressure` | Barometric pressure (optional) |
-| Subscribe | `/odom_rf2o` | `nav_msgs/Odometry` | rf2o laser odometry (inter-keyframe) |
-| Publish | `/odometry/filtered` | `nav_msgs/Odometry` | Optimized odometry estimate |
-| Publish | `/map` | `nav_msgs/OccupancyGrid` | 2D occupancy grid map |
-| Publish | TF: `odom → base_link` | `tf2` | Real-time pose estimate |
-| Publish | TF: `map → odom` | `tf2` | Map-frame correction |
+For topic details, see **`docs/04_gtsam_implementation.md` → Node Topics**.
 
 ---
 
 ## Noise Model Parameters
 
-Starting values for GTSAM factor noise models, derived from current system parameters:
-
-### BetweenFactor<Pose3> — Scan Matching Odometry
-
-```yaml
-# From rf2o scan matching quality (derived from process_noise_covariance in imu_odom_config.yaml)
-# rf2o is a 2D LiDAR: high confidence in x, y, yaw; low confidence in z, roll, pitch
-odom_roll_sigma: 0.1     # ~5.7 deg — scan matching provides poor roll
-odom_pitch_sigma: 0.1     # ~5.7 deg — scan matching provides poor pitch
-odom_yaw_sigma: 0.01      # ~0.6 deg — yaw from scan matching is reliable
-odom_x_sigma: 0.05        # 5cm position noise per keyframe interval
-odom_y_sigma: 0.05        # 5cm position noise per keyframe interval
-odom_z_sigma: 10.0        # essentially unconstrained — 2D scanner cannot observe Z
-```
-
-### CombinedImuFactor — IMU Preintegration
-
-```yaml
-# From ICM-20948 datasheet and icm20948.hpp constants
-accel_noise_sigma: 0.4905   # sqrt(ACCEL_VARIANCE) = 0.4905 m/s² (from icm20948.hpp:195)
-gyro_noise_sigma: 0.01745   # sqrt(GYRO_VARIANCE) = 0.01745 rad/s (from icm20948.hpp:204)
-accel_bias_rw_sigma: 0.001  # Slow accelerometer bias drift
-gyro_bias_rw_sigma: 0.0001  # Slow gyroscope bias drift
-```
-
-### PriorFactor<Rot3> — Gravity Tilt Constraint
-
-```yaml
-# Gravity provides excellent roll/pitch reference but no yaw information
-roll_sigma: 0.01   # High confidence from gravity vector (~0.6 deg)
-pitch_sigma: 0.01  # High confidence from gravity vector (~0.6 deg)
-yaw_sigma: 10.0    # Essentially unconstrained (gravity offers no yaw info)
-```
-
-### PriorFactor<double> — Barometric Altitude
-
-```yaml
-# LPS22HB typical accuracy ±1m for relative altitude
-altitude_sigma: 1.0  # 1 meter standard deviation
-```
-
-### BetweenFactor<Pose3> — Loop Closure
-
-```yaml
-# Loop closures from ScanContext + ICP alignment
-# Less certain than odometry, especially in Z/roll/pitch from 2D scan alignment
-loop_roll_sigma: 0.2     # ~11.5 deg — poor roll from ICP with 2D scan
-loop_pitch_sigma: 0.2     # ~11.5 deg — poor pitch from ICP with 2D scan
-loop_yaw_sigma: 0.02      # ~1.1 deg — yaw from ICP is reasonable
-loop_x_sigma: 0.15        # 15cm position noise for loop closure
-loop_y_sigma: 0.15        # 15cm position noise for loop closure
-loop_z_sigma: 5.0         # essentially unconstrained in Z
-```
-
-### PriorFactor<Rot3> — Magnetometer Heading (Conditional)
-
-```yaml
-# Indoors: very low confidence due to ferromagnetic interference
-mag_yaw_sigma_indoor: 5.0     # ~286 deg — almost no constraint
-# Outdoors: moderate confidence
-mag_yaw_sigma_outdoor: 0.1    # ~5.7 deg — useful heading reference
-```
+See **`docs/04_gtsam_implementation.md` → Configuration** for the full parameter reference.
 
 ---
 
